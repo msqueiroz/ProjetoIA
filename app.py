@@ -5,6 +5,11 @@ from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
 
+from normalizador_dinamico import (
+    aplicar_mapeamento_dinamico,
+    normalizar_unidades_dinamicas
+)
+
 
 st.set_page_config(
     page_title="Assistente Engenharia - Projeto Piloto",
@@ -255,10 +260,11 @@ with st.expander("🔎 Pipeline de processamento"):
 # ABAS
 # =========================
 
-aba1, aba2, aba3 = st.tabs([
+aba1, aba2, aba3, aba4 = st.tabs([
     "Visão Operacional",
     "Qualidade dos Dados",
-    "Assistente"
+    "Assistente",
+    "Configuração da Fonte"
 ])
 
 
@@ -463,3 +469,321 @@ with aba3:
         "Aqui vamos fazer perguntas sobre eventos "
         "e consultar o manual."
     )
+
+# =========================
+# ABA 4 - CONFIGURAÇÃO DA FONTE
+# =========================
+
+with aba4:
+
+    st.subheader("Configuração da Fonte")
+
+    st.write(
+        "Nesta área será possível configurar novas fontes "
+        "de dados e mapear variáveis para o modelo padrão "
+        "do sistema."
+    )
+
+    st.divider()
+
+    tipo_fonte_config = st.selectbox(
+        "Tipo de fonte:",
+        [
+            "CSV",
+            "PI System"
+        ],
+        key="tipo_fonte_config"
+    )
+
+    nome_configuracao = st.text_input(
+        "Nome da configuração:",
+        placeholder="Ex.: Elevatória Atlântica"
+    )
+    # =========================
+    # CONFIGURAÇÃO DINÂMICA
+    # =========================
+
+    if tipo_fonte_config == "CSV":
+
+        st.markdown("### Configuração CSV")
+
+        arquivo_csv_config = st.file_uploader(
+            "Selecione um arquivo CSV:",
+            type=["csv"],
+            key="arquivo_csv_config"
+        )
+
+        separador_csv = st.selectbox(
+            "Separador do arquivo:",
+            [",", ";", "\t"],
+            key="separador_csv"
+        )
+
+        if arquivo_csv_config is not None:
+
+            try:
+
+                df_config = pd.read_csv(
+                    arquivo_csv_config,
+                    sep=separador_csv
+                )
+
+                st.success(
+                    f"Arquivo carregado com sucesso: "
+                    f"{len(df_config)} registros encontrados."
+                )
+
+                st.markdown("### Colunas encontradas")
+
+                st.write(
+                    list(df_config.columns)
+                )
+
+                st.markdown(
+                    "### Mapeamento para o modelo padrão"
+                )
+
+                colunas_disponiveis = (
+                    ["Não mapear"]
+                    + list(df_config.columns)
+                )
+
+                map_data_hora = st.selectbox(
+                    "Data e hora →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "data_hora"
+                        )
+                        if "data_hora"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_data_hora"
+                )
+
+                map_status_bomba = st.selectbox(
+                    "Status da bomba →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "status_bomba"
+                        )
+                        if "status_bomba"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_status_bomba"
+                )
+
+                map_tensao = st.selectbox(
+                    "Tensão →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "tensao_v"
+                        )
+                        if "tensao_v"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_tensao"
+                )
+
+                unidade_tensao = st.selectbox(
+                    "Unidade da tensão na fonte:",
+                    [
+                        "V",
+                        "kV"
+                    ],
+                    key="unidade_tensao"
+                )
+
+                map_corrente = st.selectbox(
+                    "Corrente →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "corrente_a"
+                        )
+                        if "corrente_a"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_corrente"
+                )
+
+                map_temperatura = st.selectbox(
+                    "Temperatura do mancal →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "temp_mancal_c"
+                        )
+                        if "temp_mancal_c"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_temperatura"
+                )
+
+                unidade_temperatura = st.selectbox(
+                    "Unidade da temperatura na fonte:",
+                    [
+                        "°C",
+                        "°F"
+                    ],
+                    key="unidade_temperatura"
+                )
+
+                map_vibracao = st.selectbox(
+                    "Vibração →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "vibracao_mm_s"
+                        )
+                        if "vibracao_mm_s"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_vibracao"
+                )
+
+                map_nivel = st.selectbox(
+                    "Nível →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "nivel_pct"
+                        )
+                        if "nivel_pct"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_nivel"
+                )
+
+                unidade_nivel = st.selectbox(
+                    "Formato do nível na fonte:",
+                    [
+                        "%",
+                        "Fração 0-1"
+                    ],
+                    key="unidade_nivel"
+                )
+
+                map_alarme = st.selectbox(
+                    "Alarme →",
+                    colunas_disponiveis,
+                    index=(
+                        colunas_disponiveis.index(
+                            "alarme"
+                        )
+                        if "alarme"
+                        in colunas_disponiveis
+                        else 0
+                    ),
+                    key="map_alarme"
+                )
+
+                st.divider()
+
+                if st.button(
+                    "Pré-visualizar normalização",
+                    key="preview_normalizacao"
+                ):
+
+                    df_preview = df_config.copy()
+
+                    mapa_dinamico = {}
+
+                    if map_data_hora != "Não mapear":
+                        mapa_dinamico[
+                            map_data_hora
+                        ] = "data_hora"
+
+                    if map_status_bomba != "Não mapear":
+                        mapa_dinamico[
+                            map_status_bomba
+                        ] = "status_bomba"
+
+                    if map_tensao != "Não mapear":
+                        mapa_dinamico[
+                            map_tensao
+                        ] = "tensao_v"
+
+                    if map_corrente != "Não mapear":
+                        mapa_dinamico[
+                            map_corrente
+                        ] = "corrente_a"
+
+                    if map_temperatura != "Não mapear":
+                        mapa_dinamico[
+                            map_temperatura
+                        ] = "temp_mancal_c"
+
+                    if map_vibracao != "Não mapear":
+                        mapa_dinamico[
+                            map_vibracao
+                        ] = "vibracao_mm_s"
+
+                    if map_nivel != "Não mapear":
+                        mapa_dinamico[
+                            map_nivel
+                        ] = "nivel_pct"
+
+                    if map_alarme != "Não mapear":
+                        mapa_dinamico[
+                            map_alarme
+                        ] = "alarme"
+                    df_preview = aplicar_mapeamento_dinamico(
+                        df_config,
+                        mapa_dinamico
+                    )
+
+                    df_preview = normalizar_unidades_dinamicas(
+                        df_preview,
+                        unidade_tensao=unidade_tensao,
+                        unidade_temperatura=unidade_temperatura,
+                        unidade_nivel=unidade_nivel
+                    )
+ 
+                    st.success(
+                        "Pré-visualização normalizada "
+                        "com sucesso."
+                    )
+
+                    st.dataframe(
+                        df_preview.head(10),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+            except Exception as erro:
+
+                st.error(
+                    f"Não foi possível ler o arquivo: "
+                    f"{erro}"
+                )
+
+    elif tipo_fonte_config == "PI System":
+
+        st.markdown("### Configuração PI System")
+
+        st.info(
+            "A conexão será inicialmente configurada "
+            "somente para leitura."
+        )
+
+        servidor_pi = st.text_input(
+            "Servidor / endpoint do PI:",
+            placeholder="Ex.: servidor-pi",
+            key="servidor_pi"
+        )
+
+        ativo_pi = st.text_input(
+            "Ativo ou equipamento:",
+            placeholder="Ex.: Bomba P-101",
+            key="ativo_pi"
+        )
