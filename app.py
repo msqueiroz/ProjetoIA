@@ -5,7 +5,11 @@ from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
 from gerenciador_perfis import salvar_perfil
-from manual import buscar_no_manual
+from manual import (
+    buscar_no_manual,
+    buscar_contexto_diagnostico
+)
+
 
 from normalizador_dinamico import (
     aplicar_mapeamento_dinamico,
@@ -533,6 +537,91 @@ with aba3:
                     "Nenhuma informação encontrada "
                     "para esse termo."
                 )
+    st.divider()
+
+    st.subheader(
+        "Consulta automática a partir do diagnóstico"
+    )
+
+    if manual_pdf is not None:
+
+        if not df_diagnosticos.empty:
+
+            opcoes_eventos = []
+
+            for indice, linha in df_diagnosticos.iterrows():
+
+                texto_evento = (
+                    f"{linha['data_hora']} | "
+                    f"{linha['causa']}"
+                )
+
+                opcoes_eventos.append(
+                    (texto_evento, linha)
+                )
+
+            evento_escolhido = st.selectbox(
+                "Selecione um evento diagnosticado:",
+                [item[0] for item in opcoes_eventos],
+                key="evento_diagnostico_manual"
+            )
+
+            linha_evento = next(
+                item[1]
+                for item in opcoes_eventos
+                if item[0] == evento_escolhido
+            )
+
+            if st.button(
+                "Buscar contexto técnico",
+                key="buscar_contexto_diagnostico"
+            ):
+
+                contexto = buscar_contexto_diagnostico(
+                    linha_evento["causa"],
+                    manual_pdf
+                )
+
+                st.write(
+                    f"**Causa diagnosticada:** "
+                    f"{contexto['causa']}"
+                )
+
+                st.write(
+                    f"**Termo utilizado no manual:** "
+                    f"{contexto['termo_busca']}"
+                )
+
+                if contexto["resultados"]:
+
+                    st.success(
+                        "Contexto técnico encontrado no manual."
+                    )
+
+                    for numero, trecho in enumerate(
+                        contexto["resultados"],
+                        start=1
+                    ):
+
+                        with st.expander(
+                            f"Referência técnica {numero}"
+                        ):
+
+                            st.text(trecho)
+
+                else:
+
+                    st.info(
+                        "Nenhum contexto técnico encontrado "
+                        "para esse diagnóstico."
+                    )
+
+        else:
+
+            st.info(
+                "Nenhum evento diagnosticado está disponível."
+            )
+
 
 # =========================
 # ABA 4 - CONFIGURAÇÃO DA FONTE

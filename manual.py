@@ -59,6 +59,38 @@ def buscar_no_manual(termo, arquivo_pdf=None):
 
     return resultados
 
+def buscar_contexto_diagnostico(
+    causa,
+    arquivo_pdf=None
+):
+
+    termos_por_causa = {
+        "VIBRAÇÃO ALTA": "vibração",
+        "SUBTENSÃO": "subtensão",
+        "NÍVEL BAIXO": "nível baixo",
+        "ALTA TEMPERATURA DE MANCAL": "temperatura",
+        "FALHA DE INSTRUMENTAÇÃO DE NÍVEL": "instrumentação"
+    }
+
+    termo_busca = termos_por_causa.get(
+        causa,
+        causa
+    )
+
+    resultados = buscar_no_manual(
+        termo_busca,
+        arquivo_pdf
+    )
+
+    return {
+        "causa": causa,
+        "termo_busca": termo_busca,
+        "resultados": resultados
+    }
+
+
+
+
 # Este trecho só executa quando rodarmos manual.py diretamente
 if __name__ == "__main__":
 
