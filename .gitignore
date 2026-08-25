@@ -24,3 +24,6 @@ secrets.toml
 # Sistema operacional
 .DS_Store
 Thumbs.db
+
+# Perfis locais de configuração
+perfis/

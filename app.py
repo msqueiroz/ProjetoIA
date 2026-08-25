@@ -4,6 +4,7 @@ import pandas as pd
 from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
+from gerenciador_perfis import salvar_perfil
 
 from normalizador_dinamico import (
     aplicar_mapeamento_dinamico,
@@ -758,6 +759,52 @@ with aba4:
                         df_preview.head(10),
                         use_container_width=True,
                         hide_index=True
+                    )
+
+                if st.button(
+                    "Salvar perfil",
+                    key="salvar_perfil"
+                ):
+
+                    perfil_configurado = {
+                        "nome": nome_configuracao,
+                        "tipo_fonte": tipo_fonte_config,
+
+                        "mapeamento": {
+                            "data_hora": map_data_hora,
+                            "status_bomba": map_status_bomba,
+                            "tensao_v": map_tensao,
+                            "corrente_a": map_corrente,
+                            "temp_mancal_c": map_temperatura,
+                            "vibracao_mm_s": map_vibracao,
+                            "nivel_pct": map_nivel,
+                            "alarme": map_alarme
+                        },
+
+                        "unidades": {
+                            "tensao": unidade_tensao,
+                            "temperatura": unidade_temperatura,
+                            "nivel": unidade_nivel
+                        }
+                    }
+
+                    nome_arquivo = nome_configuracao.strip().lower()
+
+                    nome_arquivo = (
+                        nome_arquivo
+                        .replace(" ", "_")
+                        .replace("/", "_")
+                        .replace("\\", "_")
+                    )
+
+                    caminho_perfil = salvar_perfil(
+                        nome_arquivo,
+                        perfil_configurado
+                    )
+
+                    st.success(
+                        f"Perfil salvo com sucesso em: "
+                        f"{caminho_perfil}"
                     )
 
             except Exception as erro:
