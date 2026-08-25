@@ -3,8 +3,12 @@ from pypdf import PdfReader
 ARQUIVO_PDF = "Manual_Oper_EEF.pdf"
 
 
-def carregar_manual():
-    leitor = PdfReader(ARQUIVO_PDF)
+def carregar_manual(arquivo_pdf=None):
+
+    if arquivo_pdf is None:
+        leitor = PdfReader(ARQUIVO_PDF)
+    else:
+        leitor = PdfReader(arquivo_pdf)
 
     texto_completo = ""
 
@@ -17,9 +21,9 @@ def carregar_manual():
     return texto_completo
 
 
-def buscar_no_manual(termo):
+def buscar_no_manual(termo, arquivo_pdf=None):
 
-    texto = carregar_manual()
+    texto = carregar_manual(arquivo_pdf)
     linhas = texto.splitlines()
 
     resultados = []

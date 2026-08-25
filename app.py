@@ -5,6 +5,7 @@ from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
 from gerenciador_perfis import salvar_perfil
+from manual import buscar_no_manual
 
 from normalizador_dinamico import (
     aplicar_mapeamento_dinamico,
@@ -466,10 +467,72 @@ with aba3:
 
     st.subheader("Assistente")
 
-    st.info(
-        "Aqui vamos fazer perguntas sobre eventos "
-        "e consultar o manual."
+    st.write(
+        "Consulte o manual de operação e localize "
+        "informações técnicas relacionadas ao processo."
     )
+
+    manual_pdf = st.file_uploader(
+        "Carregar manual em PDF:",
+        type=["pdf"],
+        key="manual_pdf"
+    )
+
+    termo_manual = st.text_input(
+        "Buscar no manual:",
+        placeholder="Ex.: vibração, nível baixo, subtensão",
+        key="termo_manual"
+    )
+
+    if st.button(
+        "Consultar manual",
+        key="consultar_manual"
+    ):
+
+        if manual_pdf is None:
+
+            st.warning(
+                "Carregue um manual em PDF antes da consulta."
+            )
+
+        elif not termo_manual.strip():
+
+            st.warning(
+                "Digite um termo para pesquisar."
+            )
+
+        else:
+
+            resultados_manual = buscar_no_manual(
+                termo_manual,
+                manual_pdf
+            )
+
+            if resultados_manual:
+
+                st.success(
+                    f"Foram encontrados "
+                    f"{len(resultados_manual)} "
+                    f"trechos relacionados."
+                )
+
+                for numero, trecho in enumerate(
+                    resultados_manual,
+                    start=1
+                ):
+
+                    with st.expander(
+                        f"Trecho encontrado {numero}"
+                    ):
+
+                        st.text(trecho)
+
+            else:
+
+                st.info(
+                    "Nenhuma informação encontrada "
+                    "para esse termo."
+                )
 
 # =========================
 # ABA 4 - CONFIGURAÇÃO DA FONTE
