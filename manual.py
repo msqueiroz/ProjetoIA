@@ -1,4 +1,5 @@
 from pypdf import PdfReader
+import re
 
 ARQUIVO_PDF = "Manual_Oper_EEF.pdf"
 
@@ -60,14 +61,84 @@ def buscar_no_manual_por_paginas(
 
         texto = pagina["texto"]
 
-        if termo.lower() in texto.lower():
+        secao = extrair_secao_da_pagina(
+            texto,
+            termo
+        )
+
+        if secao:
 
             resultados.append({
                 "pagina": pagina["pagina"],
-                "texto": texto
+                "titulo": secao["titulo"],
+                "texto": secao["texto"]
             })
 
     return resultados
+
+def extrair_secao_da_pagina(
+    texto_pagina,
+    termo
+):
+
+    linhas = texto_pagina.splitlines()
+
+    indice_encontrado = None
+
+    for indice, linha in enumerate(linhas):
+
+        if termo.lower() in linha.lower():
+            indice_encontrado = indice
+            break
+
+    if indice_encontrado is None:
+        return None
+
+    # Procurar o início da seção
+    inicio = indice_encontrado
+
+    for indice in range(
+        indice_encontrado,
+        -1,
+        -1
+    ):
+
+        linha = linhas[indice].strip()
+
+        if re.match(
+            r"^\d+\.\s+",
+            linha
+        ):
+            inicio = indice
+            break
+
+    # Procurar o início da próxima seção
+    fim = len(linhas)
+
+    for indice in range(
+        inicio + 1,
+        len(linhas)
+    ):
+
+        linha = linhas[indice].strip()
+
+        if re.match(
+            r"^\d+\.\s+",
+            linha
+        ):
+            fim = indice
+            break
+
+    trecho = "\n".join(
+        linhas[inicio:fim]
+    ).strip()
+
+    titulo = linhas[inicio].strip()
+
+    return {
+        "titulo": titulo,
+        "texto": trecho
+    }
 
 def buscar_no_manual(termo, arquivo_pdf=None):
 

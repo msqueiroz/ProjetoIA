@@ -670,18 +670,22 @@ with aba3:
                     ):
 
                         pagina = referencia["pagina"]
+                        titulo = referencia["titulo"]
                         texto = referencia["texto"]
 
                         with st.expander(
-                            f"Referência técnica {numero} "
-                            f"- Página {pagina}"
+                            f"{titulo} - Página {pagina}"
                         ):
+
+                            st.write(
+                                f"**Seção:** {titulo}"
+                            )
 
                             st.write(
                                 f"**Página:** {pagina}"
                             )
 
-                            st.text(texto)
+                            st.text(texto)      
 
                 else:
 
