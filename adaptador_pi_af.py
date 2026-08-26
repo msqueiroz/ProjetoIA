@@ -310,21 +310,40 @@ def inventariar_atributos(
 
     for atributo in elemento_atual.Attributes:
 
+        # ========================================
+        # DATA REFERENCE
+        # ========================================
+
         try:
+
             data_reference = str(
                 atributo.DataReferencePlugIn.Name
             )
+
         except Exception:
+
             data_reference = ""
 
+        # ========================================
+        # UNIDADE DE ENGENHARIA
+        # ========================================
+
         try:
+
             uom = str(
                 atributo.DefaultUOM
             )
+
         except Exception:
+
             uom = ""
 
+        # ========================================
+        # LEITURA DO VALOR
+        # ========================================
+
         try:
+
             valor_af = atributo.GetValue()
 
             valor = str(
@@ -336,12 +355,61 @@ def inventariar_atributos(
             )
 
             status = "OK"
+            detalhe_erro = ""
 
         except Exception as erro:
 
-            valor = ""
+            mensagem_erro = str(
+                erro
+            )
+
             timestamp = ""
-            status = f"ERRO: {erro}"
+
+            # ========================================
+            # PI POINT NÃO ENCONTRADO
+            # ========================================
+
+            if (
+                "PI Point not found"
+                in mensagem_erro
+            ):
+
+                # Mantemos este texto em inglês porque
+                # a avaliação de qualidade já reconhece
+                # exatamente essa condição.
+                valor = "PI Point not found"
+
+                status = (
+                    "ERRO: PI Point não encontrado"
+                )
+
+                detalhe_erro = (
+                    "O atributo possui referência "
+                    "para um PI Point que não foi "
+                    "localizado no PI Data Archive."
+                )
+
+            # ========================================
+            # OUTROS ERROS
+            # ========================================
+
+            else:
+
+                valor = ""
+
+                status = (
+                    "ERRO DE LEITURA"
+                )
+
+                detalhe_erro = (
+                    mensagem_erro.splitlines()[0]
+                    if mensagem_erro
+                    else "Erro não identificado."
+                )
+
+        # ========================================
+        # REGISTRO
+        # ========================================
 
         registros.append({
             "servidor": servidor,
@@ -352,7 +420,8 @@ def inventariar_atributos(
             "uom": uom,
             "valor_atual": valor,
             "timestamp": timestamp,
-            "status_leitura": status
+            "status_leitura": status,
+            "detalhe_erro": detalhe_erro
         })
 
     return pd.DataFrame(
@@ -370,7 +439,22 @@ def avaliar_qualidade_inventario(
     classificacoes = []
     observacoes = []
 
+    atributos_adimensionais = {
+        "ph",
+        "status",
+        "estado",
+        "modo"
+    }
+
     for _, linha in resultado.iterrows():
+
+        atributo = str(
+            linha["atributo"]
+        ).strip()
+
+        nome_atributo_normalizado = (
+            atributo.lower()
+        )
 
         valor = str(
             linha["valor_atual"]
@@ -386,17 +470,45 @@ def avaliar_qualidade_inventario(
 
         classificacao = "OK"
         observacao = ""
+
         try:
-            float(valor.replace(",", "."))
+
+            float(
+                valor.replace(
+                    ",",
+                    "."
+                )
+            )
+
             valor_numerico = True
+
         except ValueError:
+
             valor_numerico = False
 
+        # ========================================
+        # ERROS CRÍTICOS DE REFERÊNCIA
+        # ========================================
+
         if (
+            "PI Point not found"
+            in valor
+        ):
+
+            classificacao = "ERRO"
+
+            observacao = (
+                "PI Point configurado no AF "
+                "não foi encontrado no PI Data Archive."
+            )
+
+        elif (
             "Calc Failed"
             in valor
         ):
+
             classificacao = "ERRO"
+
             observacao = (
                 "Cálculo do atributo falhou."
             )
@@ -405,7 +517,9 @@ def avaliar_qualidade_inventario(
             "Pt Created"
             in valor
         ):
+
             classificacao = "ALERTA"
+
             observacao = (
                 "PI Point aparentemente criado, "
                 "mas sem valor operacional válido."
@@ -414,20 +528,37 @@ def avaliar_qualidade_inventario(
         elif (
             valor == ""
         ):
+
             classificacao = "ALERTA"
+
             observacao = (
                 "Valor atual vazio."
             )
 
+        # ========================================
+        # UNIDADE DE ENGENHARIA
+        # ========================================
+
         elif (
             data_reference == "PI Point"
             and valor_numerico
-            and uom in ["", "None"]
+            and uom in [
+                "",
+                "None"
+            ]
         ):
-            classificacao = "ALERTA"
-            observacao = (
-                "PI Point sem unidade de engenharia definida."
-            )
+
+            if (
+                nome_atributo_normalizado
+                not in atributos_adimensionais
+            ):
+
+                classificacao = "ALERTA"
+
+                observacao = (
+                    "PI Point sem unidade "
+                    "de engenharia definida."
+                )
 
         classificacoes.append(
             classificacao
@@ -1226,6 +1357,176 @@ def consolidar_prontidao_final(
 
     return resultado
 
+def consolidar_diagnostico_area(
+    inventarios_avaliados,
+    nome_area
+):
+
+    if not inventarios_avaliados:
+        return pd.DataFrame()
+
+    df = pd.concat(
+        inventarios_avaliados,
+        ignore_index=True
+    )
+
+    total_atributos = len(df)
+
+    quantidade_ok = (
+        df["classificacao_qualidade"]
+        .eq("OK")
+        .sum()
+    )
+
+    quantidade_alerta = (
+        df["classificacao_qualidade"]
+        .eq("ALERTA")
+        .sum()
+    )
+
+    quantidade_erro = (
+        df["classificacao_qualidade"]
+        .eq("ERRO")
+        .sum()
+    )
+
+    if total_atributos > 0:
+        integridade_pct = round(
+            (
+                quantidade_ok
+                / total_atributos
+            ) * 100,
+            1
+        )
+    else:
+        integridade_pct = 0.0
+
+    resultado = pd.DataFrame(
+        [
+            {
+                "area": nome_area,
+                "total_atributos": total_atributos,
+                "ok": quantidade_ok,
+                "alertas": quantidade_alerta,
+                "erros": quantidade_erro,
+                "integridade_pct": integridade_pct
+            }
+        ]
+    )
+
+    return resultado
+
+
+def resumir_causas_problemas(
+    inventarios_avaliados
+):
+
+    if not inventarios_avaliados:
+        return pd.DataFrame()
+
+    df = pd.concat(
+        inventarios_avaliados,
+        ignore_index=True
+    )
+
+    problemas = df[
+        df["classificacao_qualidade"]
+        .isin(["ALERTA", "ERRO"])
+    ].copy()
+
+    if problemas.empty:
+        return pd.DataFrame()
+
+    resumo = (
+        problemas
+        .groupby(
+            [
+                "classificacao_qualidade",
+                "observacao_qualidade"
+            ]
+        )
+        .size()
+        .reset_index(
+            name="quantidade"
+        )
+        .sort_values(
+            [
+                "classificacao_qualidade",
+                "quantidade"
+            ],
+            ascending=[
+                True,
+                False
+            ]
+        )
+    )
+
+    return resumo
+
+
+def comparar_areas(
+    areas
+):
+
+    registros = []
+
+    for nome_area, inventario in areas.items():
+
+        total = len(inventario)
+
+        ok = (
+            inventario["classificacao_qualidade"]
+            .eq("OK")
+            .sum()
+        )
+
+        alertas = (
+            inventario["classificacao_qualidade"]
+            .eq("ALERTA")
+            .sum()
+        )
+
+        erros = (
+            inventario["classificacao_qualidade"]
+            .eq("ERRO")
+            .sum()
+        )
+
+        qualidade_pct = (
+            round(
+                (ok / total) * 100,
+                1
+            )
+            if total > 0
+            else 0.0
+        )
+
+        problemas_pct = (
+            round(
+                ((alertas + erros) / total) * 100,
+                1
+            )
+            if total > 0
+            else 0.0
+        )
+
+        registros.append(
+            {
+                "area": nome_area,
+                "total_atributos": total,
+                "ok": ok,
+                "alertas": alertas,
+                "erros": erros,
+                "qualidade_pct": qualidade_pct,
+                "problemas_pct": problemas_pct
+            }
+        )
+
+    return pd.DataFrame(
+        registros
+    )
+
+
 # =================================================================================================================
 # ÁREA DE TESTE LOCAL
 # ==================================================================================================================
@@ -1234,13 +1535,262 @@ if __name__ == "__main__":
 
     RELATORIOS = [
     
-         "prontidao_final"
+          "comparativo"
     ]
 
 
     servidor = "CE-SRV11"
 
-    # ========================================
+    print()
+    print("Elementos de primeiro nível da ETE:")
+
+    elementos_ete = listar_elementos(
+        servidor="CE-SRV11",
+        database="ETE"
+    )
+
+    for elemento in elementos_ete:
+        print(f"- {elemento}")
+#=========================================================================
+    print()
+    print("Elementos dentro de EE10:")
+
+    elementos_ee10 = listar_elementos(
+        servidor="CE-SRV11",
+        database="ETE",
+        caminho_elementos=[
+            "EE10"
+        ]
+    )
+
+    for elemento in elementos_ee10:
+        print(f"- {elemento}")        
+#=========================================================================
+
+    print()
+    print("Elementos dentro de EE10 > Poço de Sucção:")
+
+    elementos_poco = listar_elementos(
+        servidor="CE-SRV11",
+        database="ETE",
+        caminho_elementos=[
+            "EE10",
+            "Poço de Sucção"
+        ]
+    )
+
+    for elemento in elementos_poco:
+        print(f"- {elemento}")
+#=========================================================================
+
+    print()
+    print("Inventário do EE10-BC-01:")
+
+    inventario_ee10_bc01 = inventariar_atributos(
+        servidor="CE-SRV11",
+        database="ETE",
+        caminho_elementos=[
+            "EE10",
+            "Poço de Sucção",
+            "EE10-BC-01"
+        ]
+    )
+
+    inventario_ee10_bc01_avaliado = (
+        avaliar_qualidade_inventario(
+            inventario_ee10_bc01
+        )
+    )
+
+    print(
+        inventario_ee10_bc01_avaliado[
+            [
+                "atributo",
+                "data_reference",
+                "uom",
+                "valor_atual",
+                "classificacao_qualidade",
+                "observacao_qualidade"
+            ]
+        ].to_string(
+            index=False
+        )
+    )
+
+#==========================================================================
+
+
+    print()
+    print("Estrutura dos demais elementos de EE10:")
+
+    for area in [
+        "Caixa de Transição",
+        "PV22",
+        "SAO"
+    ]:
+
+        print()
+        print(f"--- {area} ---")
+
+        filhos = listar_elementos(
+            servidor="CE-SRV11",
+            database="ETE",
+            caminho_elementos=[
+                "EE10",
+                area
+            ]
+        )
+
+        if filhos:
+            for filho in filhos:
+                print(f"- {filho}")
+        else:
+            print("(sem elementos filhos)")
+
+
+#==========================================================================
+
+    print()
+    print("Qualidade dos elementos finais de EE10:")
+
+    for elemento in [
+        "Caixa de Transição",
+        "PV22",
+        "SAO"
+    ]:
+
+        print()
+        print(f"=== {elemento} ===")
+
+        inventario_elemento = inventariar_atributos(
+            servidor="CE-SRV11",
+            database="ETE",
+            caminho_elementos=[
+                "EE10",
+                elemento
+            ]
+        )
+
+        inventario_elemento_avaliado = (
+            avaliar_qualidade_inventario(
+                inventario_elemento
+            )
+        )
+
+        if inventario_elemento_avaliado.empty:
+
+            print(
+                "Nenhum atributo encontrado."
+            )
+
+        else:
+
+            print(
+                inventario_elemento_avaliado[
+                    [
+                        "atributo",
+                        "data_reference",
+                        "uom",
+                        "classificacao_qualidade",
+                        "observacao_qualidade"
+                    ]
+                ].to_string(
+                    index=False
+                )
+            )
+
+#==========================================================================
+
+    inventarios_ee10 = []
+
+    caminhos_ee10 = [
+        [
+            "EE10",
+            "Poço de Sucção",
+            "EE10-BC-01"
+        ],
+        [
+            "EE10",
+            "Caixa de Transição"
+        ],
+        [
+            "EE10",
+            "PV22"
+        ],
+        [
+            "EE10",
+            "SAO"
+        ]
+    ]
+
+    for caminho in caminhos_ee10:
+
+        inventario = inventariar_atributos(
+            servidor="CE-SRV11",
+            database="ETE",
+            caminho_elementos=caminho
+        )
+
+        inventario_avaliado = (
+            avaliar_qualidade_inventario(
+                inventario
+            )
+        )
+
+        inventarios_ee10.append(
+            inventario_avaliado
+        )
+
+
+    diagnostico_ee10 = (
+        consolidar_diagnostico_area(
+            inventarios_ee10,
+            nome_area="EE10"
+        )
+    )
+
+    print()
+    print(
+        "Diagnóstico consolidado - EE10:"
+    )
+
+    print(
+        diagnostico_ee10.to_string(
+            index=False
+        )
+    )
+
+
+#=========================================================================
+    inventario_ee10_consolidado = pd.concat(
+        inventarios_ee10,
+        ignore_index=True
+    )
+
+#========================================================================
+    causas_ee10 = (
+        resumir_causas_problemas(
+            inventarios_ee10
+        )
+    )
+
+    print()
+    print(
+        "Causas dos problemas - EE10:"
+    )
+
+    print(
+        causas_ee10.to_string(
+            index=False
+        )
+    )
+
+#========================================================================
+
+
+
+#=========================================================================
+     # ========================================
     # COLETA BASE - CAPTAÇÃO / UTA
     # ========================================
 
@@ -1340,6 +1890,82 @@ if __name__ == "__main__":
         resumir_cobertura_por_categoria(
             matriz_classificada
         )
+    )
+
+    # ========================================
+    # COLETA BASE - EE10 / ETE
+    # ========================================
+
+    inventarios_ee10 = []
+
+    caminhos_ee10 = [
+        [
+            "EE10",
+            "Poço de Sucção",
+            "EE10-BC-01"
+        ],
+        [
+            "EE10",
+            "Caixa de Transição"
+        ],
+        [
+            "EE10",
+            "PV22"
+        ],
+        [
+            "EE10",
+            "SAO"
+        ]
+    ]
+
+    for caminho in caminhos_ee10:
+
+        inventario_ee10 = inventariar_atributos(
+            servidor=servidor,
+            database="ETE",
+            caminho_elementos=caminho
+        )
+
+        inventario_ee10_avaliado = (
+            avaliar_qualidade_inventario(
+                inventario_ee10
+            )
+        )
+
+        inventarios_ee10.append(
+            inventario_ee10_avaliado
+        )
+
+    inventario_ee10_consolidado = pd.concat(
+        inventarios_ee10,
+        ignore_index=True
+    )
+
+    diagnostico_ee10 = (
+        consolidar_diagnostico_area(
+            inventarios_ee10,
+            nome_area="EE10"
+        )
+    )
+
+    causas_ee10 = (
+        resumir_causas_problemas(
+            inventarios_ee10
+        )
+    )
+
+    # ========================================
+    # COMPARATIVO UTA x ETE
+    # ========================================
+
+    comparativo_areas = comparar_areas(
+        {
+            "UTA - CAPTAÇÃO":
+                inventario_captacao_avaliado,
+
+            "ETE - EE10":
+                inventario_ee10_consolidado
+        }
     )
 
     # ========================================
@@ -1586,70 +2212,129 @@ if __name__ == "__main__":
             )
         )
 
-# ========================================
-# RELATÓRIO - QUALIDADE PONDERADA
-# ========================================
+    # ========================================
+    # RELATÓRIO - QUALIDADE PONDERADA
+    # ========================================
 
-if (
-    "qualidade_ponderada" in RELATORIOS
-    or "todos" in RELATORIOS
-):
+    if (
+        "qualidade_ponderada" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
 
-    print()
-    print(
-        "Qualidade ponderada por criticidade - CAPTAÇÃO:"
-    )
-
-    print(
-        qualidade_ponderada_captacao.to_string(
-            index=False
+        print()
+        print(
+            "Qualidade ponderada por criticidade - CAPTAÇÃO:"
         )
-    )
 
-# ========================================
-# RELATÓRIO - BLOQUEIOS DE CRITICIDADE
-# ========================================
-
-if (
-    "bloqueios" in RELATORIOS
-    or "todos" in RELATORIOS
-):
-
-    print()
-    print(
-        "Bloqueios por criticidade - CAPTAÇÃO:"
-    )
-
-    print(
-        bloqueios_captacao.to_string(
-            index=False
+        print(
+            qualidade_ponderada_captacao.to_string(
+                index=False
+            )
         )
-    )
 
-# ========================================
-# RELATÓRIO - PRONTIDÃO FINAL
-# ========================================
+    # ========================================
+    # RELATÓRIO - BLOQUEIOS
+    # ========================================
 
+    if (
+        "bloqueios" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
 
-if (
-    "prontidao_final" in RELATORIOS
-    or "todos" in RELATORIOS
-):
-
-    print()
-    print(
-        "Prontidão final - CAPTAÇÃO:"
-    )
-
-    print(
-        prontidao_final_captacao[
-            [
-                "elemento",
-                "qualidade_ponderada_pct",
-                "status_criticidade",
-                "classificacao_final"
-            ]
-        ].to_string(
-            index=False
+        print()
+        print(
+            "Bloqueios por criticidade - CAPTAÇÃO:"
         )
-    )
+
+        print(
+            bloqueios_captacao.to_string(
+                index=False
+            )
+        )
+
+    # ========================================
+    # RELATÓRIO - PRONTIDÃO FINAL
+    # ========================================
+
+    if (
+        "prontidao_final" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
+
+        print()
+        print(
+            "Prontidão final - CAPTAÇÃO:"
+        )
+
+        print(
+            prontidao_final_captacao[
+                [
+                    "elemento",
+                    "qualidade_ponderada_pct",
+                    "status_criticidade",
+                    "classificacao_final"
+                ]
+            ].to_string(
+                index=False
+            )
+        )
+
+    # ========================================
+    # RELATÓRIO - DIAGNÓSTICO EE10
+    # ========================================
+
+    if (
+        "diagnostico_ee10" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
+
+        print()
+        print(
+            "Diagnóstico consolidado - EE10:"
+        )
+
+        print(
+            diagnostico_ee10.to_string(
+                index=False
+            )
+        )
+
+    # ========================================
+    # RELATÓRIO - CAUSAS EE10
+    # ========================================
+
+    if (
+        "causas_ee10" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
+
+        print()
+        print(
+            "Causas dos problemas - EE10:"
+        )
+
+        print(
+            causas_ee10.to_string(
+                index=False
+            )
+        )
+
+    # ========================================
+    # RELATÓRIO - COMPARATIVO UTA x ETE
+    # ========================================
+
+    if (
+        "comparativo" in RELATORIOS
+        or "todos" in RELATORIOS
+    ):
+
+        print()
+        print(
+            "Comparativo de qualidade das áreas:"
+        )
+
+        print(
+            comparativo_areas.to_string(
+                index=False
+            )
+        )
