@@ -5,6 +5,7 @@ from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
 from gerenciador_perfis import salvar_perfil
+from assistente_engenharia import montar_resumo_engenharia
 from manual import (
     buscar_no_manual,
     buscar_contexto_diagnostico
@@ -595,6 +596,16 @@ with aba3:
                     manual_pdf
                 )
 
+                resumo_engenharia = montar_resumo_engenharia(
+                    evento=linha_evento["data_hora"],
+                    categoria=linha_evento["categoria"],
+                    causa=linha_evento["causa"],
+                    confianca=linha_evento["confianca"],
+                    evidencias=linha_evento["evidencias"].split(" | "),
+                    documento=manual_pdf.name,
+                    referencias=contexto["resultados"]
+                )
+
                 # =========================
                 # CASO DE ENGENHARIA
                 # =========================
@@ -607,24 +618,24 @@ with aba3:
 
                     st.write(
                         f"**Evento:** "
-                        f"{linha_evento['data_hora']}"
+                        f"{resumo_engenharia['evento']}"
                     )
 
                     st.write(
                         f"**Categoria:** "
-                        f"{linha_evento['categoria']}"
+                        f"{resumo_engenharia['categoria']}"
                     )
 
                     st.write(
                         f"**Causa provável:** "
-                        f"{linha_evento['causa']}"
+                        f"{resumo_engenharia['causa']}"
                     )
 
                 with col2:
 
                     st.write(
                         f"**Confiança:** "
-                        f"{linha_evento['confianca']}%"
+                        f"{resumo_engenharia['confianca']}%"
                     )
 
                 # =========================
@@ -636,8 +647,7 @@ with aba3:
                 )
 
                 for evidencia in (
-                    linha_evento["evidencias"]
-                    .split(" | ")
+                    resumo_engenharia["evidencias"]
                 ):
 
                     st.write(
@@ -654,7 +664,7 @@ with aba3:
 
                 st.write(
                     f"**Documento:** "
-                    f"{manual_pdf.name}"
+                    f"{resumo_engenharia['documento']}"
                 )
 
                 if contexto["resultados"]:
@@ -665,7 +675,7 @@ with aba3:
                     )
 
                     for numero, referencia in enumerate(
-                        contexto["resultados"],
+                        resumo_engenharia["referencias"],
                         start=1
                     ):
 
