@@ -476,11 +476,19 @@ with aba3:
         "informações técnicas relacionadas ao processo."
     )
 
+    # =========================
+    # CARREGAMENTO DO MANUAL
+    # =========================
+
     manual_pdf = st.file_uploader(
         "Carregar manual em PDF:",
         type=["pdf"],
         key="manual_pdf"
     )
+
+    # =========================
+    # CONSULTA MANUAL
+    # =========================
 
     termo_manual = st.text_input(
         "Buscar no manual:",
@@ -537,6 +545,11 @@ with aba3:
                     "Nenhuma informação encontrada "
                     "para esse termo."
                 )
+
+    # =========================
+    # CONSULTA AUTOMÁTICA
+    # =========================
+
     st.divider()
 
     st.subheader(
@@ -582,55 +595,93 @@ with aba3:
                     manual_pdf
                 )
 
+                # =========================
+                # CASO DE ENGENHARIA
+                # =========================
+
                 st.markdown("## Caso de Engenharia")
 
                 col1, col2 = st.columns(2)
 
                 with col1:
+
                     st.write(
-                        f"**Evento:** {linha_evento['data_hora']}"
+                        f"**Evento:** "
+                        f"{linha_evento['data_hora']}"
                     )
 
                     st.write(
-                        f"**Categoria:** {linha_evento['categoria']}"
+                        f"**Categoria:** "
+                        f"{linha_evento['categoria']}"
                     )
 
                     st.write(
-                        f"**Causa provável:** {linha_evento['causa']}"
+                        f"**Causa provável:** "
+                        f"{linha_evento['causa']}"
                     )
 
                 with col2:
+
                     st.write(
-                        f"**Confiança:** {linha_evento['confianca']}%"
+                        f"**Confiança:** "
+                        f"{linha_evento['confianca']}%"
                     )
 
-                st.markdown("### Evidências observadas")
+                # =========================
+                # EVIDÊNCIAS
+                # =========================
 
-                for evidencia in linha_evento["evidencias"].split(" | "):
-                    st.write(f"- {evidencia}")
+                st.markdown(
+                    "### Evidências observadas"
+                )
 
-                st.markdown("### Referência de Engenharia")
+                for evidencia in (
+                    linha_evento["evidencias"]
+                    .split(" | ")
+                ):
+
+                    st.write(
+                        f"- {evidencia}"
+                    )
+
+                # =========================
+                # REFERÊNCIA DE ENGENHARIA
+                # =========================
+
+                st.markdown(
+                    "### Referência de Engenharia"
+                )
 
                 st.write(
-                    f"**Documento:** {manual_pdf.name}"
+                    f"**Documento:** "
+                    f"{manual_pdf.name}"
                 )
 
                 if contexto["resultados"]:
 
                     st.success(
-                        "Contexto técnico encontrado no manual."
+                        "Contexto técnico encontrado "
+                        "no manual."
                     )
 
-                    for numero, trecho in enumerate(
+                    for numero, referencia in enumerate(
                         contexto["resultados"],
                         start=1
                     ):
 
+                        pagina = referencia["pagina"]
+                        texto = referencia["texto"]
+
                         with st.expander(
-                            f"Referência técnica {numero}"
+                            f"Referência técnica {numero} "
+                            f"- Página {pagina}"
                         ):
 
-                            st.text(trecho)
+                            st.write(
+                                f"**Página:** {pagina}"
+                            )
+
+                            st.text(texto)
 
                 else:
 
@@ -642,9 +693,9 @@ with aba3:
         else:
 
             st.info(
-                "Nenhum evento diagnosticado está disponível."
+                "Nenhum evento diagnosticado "
+                "está disponível."
             )
-
 
 # =========================
 # ABA 4 - CONFIGURAÇÃO DA FONTE

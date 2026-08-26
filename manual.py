@@ -20,6 +20,54 @@ def carregar_manual(arquivo_pdf=None):
 
     return texto_completo
 
+def carregar_manual_por_paginas(arquivo_pdf=None):
+
+
+    if arquivo_pdf is None:
+        leitor = PdfReader(ARQUIVO_PDF)
+    else:
+        leitor = PdfReader(arquivo_pdf)
+
+    paginas = []
+
+    for numero_pagina, pagina in enumerate(
+        leitor.pages,
+        start=1
+    ):
+
+        texto = pagina.extract_text()
+
+        if texto:
+            paginas.append({
+                "pagina": numero_pagina,
+                "texto": texto
+            })
+
+    return paginas
+
+def buscar_no_manual_por_paginas(
+    termo,
+    arquivo_pdf=None
+):
+
+    paginas = carregar_manual_por_paginas(
+        arquivo_pdf
+    )
+
+    resultados = []
+
+    for pagina in paginas:
+
+        texto = pagina["texto"]
+
+        if termo.lower() in texto.lower():
+
+            resultados.append({
+                "pagina": pagina["pagina"],
+                "texto": texto
+            })
+
+    return resultados
 
 def buscar_no_manual(termo, arquivo_pdf=None):
 
@@ -77,7 +125,7 @@ def buscar_contexto_diagnostico(
         causa
     )
 
-    resultados = buscar_no_manual(
+    resultados = buscar_no_manual_por_paginas(
         termo_busca,
         arquivo_pdf
     )
@@ -87,8 +135,6 @@ def buscar_contexto_diagnostico(
         "termo_busca": termo_busca,
         "resultados": resultados
     }
-
-
 
 
 # Este trecho só executa quando rodarmos manual.py diretamente
