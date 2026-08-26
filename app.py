@@ -582,14 +582,37 @@ with aba3:
                     manual_pdf
                 )
 
-                st.write(
-                    f"**Causa diagnosticada:** "
-                    f"{contexto['causa']}"
-                )
+                st.markdown("## Caso de Engenharia")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write(
+                        f"**Evento:** {linha_evento['data_hora']}"
+                    )
+
+                    st.write(
+                        f"**Categoria:** {linha_evento['categoria']}"
+                    )
+
+                    st.write(
+                        f"**Causa provável:** {linha_evento['causa']}"
+                    )
+
+                with col2:
+                    st.write(
+                        f"**Confiança:** {linha_evento['confianca']}%"
+                    )
+
+                st.markdown("### Evidências observadas")
+
+                for evidencia in linha_evento["evidencias"].split(" | "):
+                    st.write(f"- {evidencia}")
+
+                st.markdown("### Referência de Engenharia")
 
                 st.write(
-                    f"**Termo utilizado no manual:** "
-                    f"{contexto['termo_busca']}"
+                    f"**Documento:** {manual_pdf.name}"
                 )
 
                 if contexto["resultados"]:
