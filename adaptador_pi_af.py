@@ -30,7 +30,6 @@ def conectar_af(
 
     return sistema
 
-
 def listar_databases(
     servidor="CE-SRV11"
 ):
@@ -428,7 +427,115 @@ def inventariar_atributos(
         registros
     )
 
+REGRAS_ERROS_QUALIDADE = [
+    {
+        "padrao": "PI Point not found",
+        "classificacao": "ERRO",
+        "categoria": "REFERENCIA",
+        "codigo": "PI_POINT_NAO_ENCONTRADO",
+        "observacao": (
+            "PI Point configurado no AF "
+            "não foi encontrado no PI Data Archive."
+        )
+    },
+    {
+        "padrao": "Calc Failed",
+        "classificacao": "ERRO",
+        "categoria": "CALCULO",
+        "codigo": "CALCULO_FALHOU",
+        "observacao": (
+            "Cálculo do atributo falhou."
+        )
+    },
+    {
+        "padrao": "Division by Zero",
+        "classificacao": "ERRO",
+        "categoria": "CALCULO",
+        "codigo": "DIVISAO_POR_ZERO",
+        "observacao": (
+            "Cálculo do atributo falhou "
+            "por divisão por zero."
+        )
+    },
+    {
+        "padrao": "divide by zero",
+        "classificacao": "ERRO",
+        "categoria": "CALCULO",
+        "codigo": "DIVISAO_POR_ZERO",
+        "observacao": (
+            "Cálculo do atributo falhou "
+            "por divisão por zero."
+        )
+    },
+    {
+        "padrao": "Pt Created",
+        "classificacao": "ALERTA",
+        "categoria": "DADO",
+        "codigo": "PI_POINT_SEM_DADO",
+        "observacao": (
+            "PI Point aparentemente criado, "
+            "mas sem valor operacional válido."
+        )
+    },
+    {
+        "padrao": "Script Error",
+        "classificacao": "ERRO",
+        "categoria": "SCRIPT",
+        "codigo": "ERRO_SCRIPT",
+        "observacao": (
+            "Erro detectado na execução "
+            "de script ou análise."
+        )
+    },
+    {
+        "padrao": "Analysis Error",
+        "classificacao": "ERRO",
+        "categoria": "ANALISE",
+        "codigo": "ERRO_ANALISE",
+        "observacao": (
+            "Erro detectado na análise AF."
+        )
+    },
+    {
+        "padrao": "Bad Input",
+        "classificacao": "ERRO",
+        "categoria": "DADO",
+        "codigo": "ENTRADA_INVALIDA",
+        "observacao": (
+            "A análise recebeu uma entrada inválida."
+        )
+    },
+    {
+        "padrao": "No Data",
+        "classificacao": "ALERTA",
+        "categoria": "DADO",
+        "codigo": "SEM_DADO",
+        "observacao": (
+            "Nenhum dado válido disponível "
+            "para o atributo."
+        )
+    }
+]
 
+
+def detectar_erro_conhecido(
+    valor
+):
+
+    texto = str(
+        valor
+    ).lower()
+
+    for regra in REGRAS_ERROS_QUALIDADE:
+
+        if (
+            regra["padrao"].lower()
+            in texto
+        ):
+
+            return regra
+
+    return None
 
 def avaliar_qualidade_inventario(
     inventario
@@ -438,6 +545,8 @@ def avaliar_qualidade_inventario(
 
     classificacoes = []
     observacoes = []
+    categorias_erro = []
+    codigos_erro = []
 
     atributos_adimensionais = {
         "ph",
@@ -470,6 +579,12 @@ def avaliar_qualidade_inventario(
 
         classificacao = "OK"
         observacao = ""
+        categoria_erro = ""
+        codigo_erro = ""
+
+        # ========================================
+        # IDENTIFICA VALOR NUMÉRICO
+        # ========================================
 
         try:
 
@@ -487,52 +602,55 @@ def avaliar_qualidade_inventario(
             valor_numerico = False
 
         # ========================================
-        # ERROS CRÍTICOS DE REFERÊNCIA
+        # CATÁLOGO DE ERROS CONHECIDOS
         # ========================================
 
-        if (
-            "PI Point not found"
-            in valor
-        ):
+        erro_conhecido = detectar_erro_conhecido(
+            valor
+        )
 
-            classificacao = "ERRO"
+        if erro_conhecido is not None:
 
-            observacao = (
-                "PI Point configurado no AF "
-                "não foi encontrado no PI Data Archive."
+            classificacao = (
+                erro_conhecido[
+                    "classificacao"
+                ]
             )
 
-        elif (
-            "Calc Failed"
-            in valor
-        ):
-
-            classificacao = "ERRO"
-
             observacao = (
-                "Cálculo do atributo falhou."
+                erro_conhecido[
+                    "observacao"
+                ]
             )
 
-        elif (
-            "Pt Created"
-            in valor
-        ):
-
-            classificacao = "ALERTA"
-
-            observacao = (
-                "PI Point aparentemente criado, "
-                "mas sem valor operacional válido."
+            categoria_erro = (
+                erro_conhecido[
+                    "categoria"
+                ]
             )
 
-        elif (
-            valor == ""
-        ):
+            codigo_erro = (
+                erro_conhecido[
+                    "codigo"
+                ]
+            )
+
+        # ========================================
+        # VALOR VAZIO
+        # ========================================
+
+        elif valor == "":
 
             classificacao = "ALERTA"
 
             observacao = (
                 "Valor atual vazio."
+            )
+
+            categoria_erro = "DADO"
+
+            codigo_erro = (
+                "VALOR_VAZIO"
             )
 
         # ========================================
@@ -560,12 +678,32 @@ def avaliar_qualidade_inventario(
                     "de engenharia definida."
                 )
 
+                categoria_erro = (
+                    "CONFIGURACAO"
+                )
+
+                codigo_erro = (
+                    "UOM_AUSENTE"
+                )
+
+        # ========================================
+        # REGISTRO DO RESULTADO
+        # ========================================
+
         classificacoes.append(
             classificacao
         )
 
         observacoes.append(
             observacao
+        )
+
+        categorias_erro.append(
+            categoria_erro
+        )
+
+        codigos_erro.append(
+            codigo_erro
         )
 
     resultado[
@@ -575,6 +713,14 @@ def avaliar_qualidade_inventario(
     resultado[
         "observacao_qualidade"
     ] = observacoes
+
+    resultado[
+        "categoria_erro"
+    ] = categorias_erro
+
+    resultado[
+        "codigo_erro"
+    ] = codigos_erro
 
     return resultado
 
@@ -600,6 +746,10 @@ def inventariar_familia(
     elementos = banco.Elements
     elemento_pai = None
 
+    # ========================================
+    # LOCALIZA ELEMENTO SELECIONADO
+    # ========================================
+
     for nome_elemento in caminho_pai:
 
         elemento_pai = elementos[
@@ -615,24 +765,38 @@ def inventariar_familia(
 
     inventarios = []
 
-    for elemento in elementos:
+    # ========================================
+    # FUNÇÃO RECURSIVA
+    # ========================================
 
-        caminho_filho = (
-            caminho_pai
-            + [elemento.Name]
-        )
+    def percorrer_elemento(
+        elemento,
+        caminho_atual
+    ):
+
+        # ========================================
+        # INVENTARIA O PRÓPRIO ELEMENTO
+        # ========================================
 
         try:
 
             inventario = inventariar_atributos(
                 servidor=servidor,
                 database=database,
-                caminho_elementos=caminho_filho
+                caminho_elementos=caminho_atual
             )
 
-            inventarios.append(
-                inventario
-            )
+            if not inventario.empty:
+
+                inventario[
+                    "caminho_elemento"
+                ] = " > ".join(
+                    caminho_atual
+                )
+
+                inventarios.append(
+                    inventario
+                )
 
         except Exception as erro:
 
@@ -649,12 +813,47 @@ def inventariar_familia(
                         "timestamp": "",
                         "status_leitura": (
                             f"ERRO: {erro}"
+                        ),
+                        "caminho_elemento": (
+                            " > ".join(
+                                caminho_atual
+                            )
                         )
                     }
                 ])
             )
 
+        # ========================================
+        # PERCORRE OS FILHOS
+        # ========================================
+
+        for elemento_filho in elemento.Elements:
+
+            caminho_filho = (
+                caminho_atual
+                + [elemento_filho.Name]
+            )
+
+            percorrer_elemento(
+                elemento_filho,
+                caminho_filho
+            )
+
+    # ========================================
+    # EXECUTA A PARTIR DO ELEMENTO ESCOLHIDO
+    # ========================================
+
+    percorrer_elemento(
+        elemento_pai,
+        caminho_pai
+    )
+
+    # ========================================
+    # CONSOLIDA RESULTADO
+    # ========================================
+
     if not inventarios:
+
         return pd.DataFrame()
 
     return pd.concat(

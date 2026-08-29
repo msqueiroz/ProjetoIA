@@ -25,8 +25,15 @@ from adaptador_pi_af import (
     inventariar_atributos,
     comparar_areas,
     consolidar_diagnostico_area,
-    resumir_causas_problemas
+    resumir_causas_problemas,
+    listar_databases,
+    listar_elementos
 )
+
+@st.cache_data(ttl=300)
+def obter_databases_cache(servidor):
+    return listar_databases(servidor)
+
 st.set_page_config(
     page_title="Assistente Engenharia - Projeto Piloto",
     page_icon="⚙️",
@@ -1118,141 +1125,202 @@ with aba5:
     st.divider()
 
     # ========================================
-    # BOTÃO DE EXECUÇÃO DO DIAGNÓSTICO
+    # SELEÇÃO DINÂMICA DA FONTE PI/AF
     # ========================================
 
-    if st.button(
-        "Executar diagnóstico PI/AF",
-        key="executar_diagnostico_pi"
-    ):
+    st.markdown(
+        "### Seleção da área para diagnóstico"
+    )
 
-        with st.spinner(
-            "Consultando PI AF e avaliando os ativos..."
-        ):
+    servidor_pi = st.text_input(
+        "Servidor PI/AF",
+        value="CE-SRV11",
+        key="servidor_governanca_pi"
+    )
 
-            # ========================================
-            # UTA - CAPTAÇÃO
-            # ========================================
+    database_selecionada = None
+    elemento_selecionado = None
 
-            inventario_captacao = inventariar_familia(
-                servidor="CE-SRV11",
-                database="UTA",
-                caminho_pai=[
-                    "CAPTAÇÃO"
-                ]
+    # ========================================
+    # DATABASES DISPONÍVEIS
+    # ========================================
+
+    try:
+
+        databases_disponiveis = obter_databases_cache(
+            servidor_pi
+        )
+
+        if databases_disponiveis:
+
+            database_selecionada = st.selectbox(
+                "Database AF",
+                options=databases_disponiveis,
+                key="database_governanca_pi"
             )
 
-            inventario_captacao_avaliado = (
-                avaliar_qualidade_inventario(
-                    inventario_captacao
-                )
+        else:
+
+            st.warning(
+                "Nenhuma database AF foi encontrada "
+                "no servidor informado."
             )
 
-            # ========================================
-            # ETE - EE10
-            # ========================================
+    except Exception as erro:
 
-            inventarios_ee10 = []
-
-            caminhos_ee10 = [
-                [
-                    "EE10",
-                    "Poço de Sucção",
-                    "EE10-BC-01"
-                ],
-                [
-                    "EE10",
-                    "Caixa de Transição"
-                ],
-                [
-                    "EE10",
-                    "PV22"
-                ],
-                [
-                    "EE10",
-                    "SAO"
-                ]
-            ]
-
-            for caminho in caminhos_ee10:
-
-                inventario = inventariar_atributos(
-                    servidor="CE-SRV11",
-                    database="ETE",
-                    caminho_elementos=caminho
-                )
-
-                inventario = (
-                    avaliar_qualidade_inventario(
-                        inventario
-                    )
-                )
-
-                inventarios_ee10.append(
-                    inventario
-                )
-
-            inventario_ee10_consolidado = pd.concat(
-                inventarios_ee10,
-                ignore_index=True
-            )
-
-            # ========================================
-            # COMPARATIVO
-            # ========================================
-
-            comparativo = comparar_areas(
-                {
-                    "UTA - CAPTAÇÃO":
-                        inventario_captacao_avaliado,
-
-                    "ETE - EE10":
-                        inventario_ee10_consolidado
-                }
-            )
-
-            # ========================================
-            # CAUSAS EE10
-            # ========================================
-
-            causas_ee10 = resumir_causas_problemas(
-                inventarios_ee10
-            )
-
-            # ========================================
-            # SESSION STATE
-            # ========================================
-
-            st.session_state[
-                "diagnostico_pi_executado"
-            ] = True
-
-            st.session_state[
-                "comparativo_pi"
-            ] = comparativo
-
-            st.session_state[
-                "inventario_captacao_avaliado"
-            ] = inventario_captacao_avaliado
-
-            st.session_state[
-                "inventario_ee10_consolidado"
-            ] = inventario_ee10_consolidado
-
-            st.session_state[
-                "inventarios_ee10"
-            ] = inventarios_ee10
-
-            st.session_state[
-                "causas_ee10"
-            ] = causas_ee10
-
-        st.success(
-            "Diagnóstico PI/AF concluído."
+        st.error(
+            "Não foi possível consultar as databases AF: "
+            f"{erro}"
         )
 
     # ========================================
-    # EXIBIÇÃO PERSISTENTE DO DIAGNÓSTICO
+    # ELEMENTOS DISPONÍVEIS
+    # ========================================
+
+    if database_selecionada:
+
+        try:
+
+            elementos_disponiveis = listar_elementos(
+                servidor=servidor_pi,
+                database=database_selecionada,
+                caminho_elementos=[]
+            )
+
+            if elementos_disponiveis:
+
+                elemento_selecionado = st.selectbox(
+                    "Elemento / Área",
+                    options=elementos_disponiveis,
+                    key="elemento_governanca_pi"
+                )
+
+            else:
+
+                st.info(
+                    "A database selecionada não possui "
+                    "elementos disponíveis neste nível."
+                )
+
+        except Exception as erro:
+
+            st.error(
+                "Não foi possível consultar os elementos "
+                f"da database: {erro}"
+            )
+
+    # ========================================
+    # BOTÃO DE EXECUÇÃO
+    # ========================================
+
+    executar_diagnostico = st.button(
+        "Executar diagnóstico PI/AF",
+        key="executar_diagnostico_pi"
+    )
+
+    if executar_diagnostico:
+
+        if (
+            not database_selecionada
+            or not elemento_selecionado
+        ):
+
+            st.warning(
+                "Selecione uma database e um elemento "
+                "antes de executar o diagnóstico."
+            )
+
+        else:
+
+            with st.spinner(
+                "Consultando PI AF e avaliando os ativos..."
+            ):
+
+                try:
+
+                    # ========================================
+                    # INVENTÁRIO DINÂMICO
+                    # ========================================
+
+                    inventario_area = inventariar_familia(
+                        servidor=servidor_pi,
+                        database=database_selecionada,
+                        caminho_pai=[
+                            elemento_selecionado
+                        ]
+                    )
+
+                    # ========================================
+                    # QUALIDADE
+                    # ========================================
+
+                    inventario_area = (
+                        avaliar_qualidade_inventario(
+                            inventario_area
+                        )
+                    )
+
+                    # ========================================
+                    # IDENTIFICAÇÃO DA ÁREA
+                    # ========================================
+
+                    nome_area = (
+                        f"{database_selecionada}"
+                        f" - {elemento_selecionado}"
+                    )
+
+                    # ========================================
+                    # COMPARATIVO
+                    # ========================================
+
+                    comparativo_area = comparar_areas(
+                        {
+                            nome_area:
+                                inventario_area
+                        }
+                    )
+
+                    # ========================================
+                    # SESSION STATE
+                    # ========================================
+
+                    st.session_state[
+                        "diagnostico_pi_executado"
+                    ] = True
+
+                    st.session_state[
+                        "inventario_area_pi"
+                    ] = inventario_area
+
+                    st.session_state[
+                        "comparativo_pi"
+                    ] = comparativo_area
+
+                    st.session_state[
+                        "nome_area_pi"
+                    ] = nome_area
+
+                    st.session_state[
+                        "database_diagnostico_pi"
+                    ] = database_selecionada
+
+                    st.session_state[
+                        "elemento_diagnostico_pi"
+                    ] = elemento_selecionado
+
+                    st.success(
+                        "Diagnóstico PI/AF concluído."
+                    )
+
+                except Exception as erro:
+
+                    st.error(
+                        "Erro durante a execução do diagnóstico: "
+                        f"{erro}"
+                    )
+
+    # ========================================
+    # EXIBIÇÃO PERSISTENTE
     # ========================================
 
     if st.session_state.get(
@@ -1260,63 +1328,67 @@ with aba5:
         False
     ):
 
+        inventario_area = st.session_state[
+            "inventario_area_pi"
+        ]
+
         comparativo = st.session_state[
             "comparativo_pi"
         ]
 
-        inventario_captacao_avaliado = (
-            st.session_state[
-                "inventario_captacao_avaliado"
-            ]
-        )
+        nome_area = st.session_state[
+            "nome_area_pi"
+        ]
 
-        inventario_ee10_consolidado = (
-            st.session_state[
-                "inventario_ee10_consolidado"
-            ]
-        )
+        database_diagnostico = st.session_state[
+            "database_diagnostico_pi"
+        ]
 
-        inventarios_ee10 = (
-            st.session_state[
-                "inventarios_ee10"
-            ]
-        )
+        elemento_diagnostico = st.session_state[
+            "elemento_diagnostico_pi"
+        ]
 
-        causas_ee10 = (
-            st.session_state[
-                "causas_ee10"
-            ]
+        st.divider()
+
+        st.markdown(
+            f"## Resultado: {nome_area}"
         )
 
         # ========================================
         # INDICADORES
         # ========================================
 
-        total_atributos = int(
-            comparativo[
-                "total_atributos"
-            ].sum()
+        total_atributos = len(
+            inventario_area
         )
 
         total_ok = int(
-            comparativo[
-                "ok"
-            ].sum()
+            (
+                inventario_area[
+                    "classificacao_qualidade"
+                ] == "OK"
+            ).sum()
         )
 
         total_alertas = int(
-            comparativo[
-                "alertas"
-            ].sum()
+            (
+                inventario_area[
+                    "classificacao_qualidade"
+                ] == "ALERTA"
+            ).sum()
         )
 
         total_erros = int(
-            comparativo[
-                "erros"
-            ].sum()
+            (
+                inventario_area[
+                    "classificacao_qualidade"
+                ] == "ERRO"
+            ).sum()
         )
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = st.columns(
+            4
+        )
 
         col1.metric(
             "Atributos analisados",
@@ -1338,20 +1410,26 @@ with aba5:
             total_erros
         )
 
+        # ========================================
+        # STATUS DA ÁREA
+        # ========================================
+
         st.divider()
 
-    # ========================================
-    # STATUS E QUALIDADE POR ÁREA
-    # ========================================
-
         st.markdown(
-            "### Status de prontidão por área"
+            "### Status da área"
         )
 
-        for _, linha in comparativo.iterrows():
+        if not comparativo.empty:
+
+            linha_area = comparativo.iloc[
+                0
+            ]
 
             qualidade = float(
-                linha["qualidade_pct"]
+                linha_area[
+                    "qualidade_pct"
+                ]
             )
 
             status_area = classificar_status_area(
@@ -1359,12 +1437,15 @@ with aba5:
             )
 
             if status_area == "PRONTO":
+
                 icone = "🟢"
 
             elif status_area == "ATENÇÃO":
+
                 icone = "🟡"
 
             else:
+
                 icone = "🔴"
 
             col_area, col_status, col_qualidade = (
@@ -1374,7 +1455,7 @@ with aba5:
             )
 
             col_area.markdown(
-                f"### {linha['area']}"
+                f"### {nome_area}"
             )
 
             col_status.metric(
@@ -1392,21 +1473,19 @@ with aba5:
             )
 
             st.caption(
-                f"{int(linha['ok'])} OK | "
-                f"{int(linha['alertas'])} alertas | "
-                f"{int(linha['erros'])} erros"
+                f"{total_ok} OK | "
+                f"{total_alertas} alertas | "
+                f"{total_erros} erros"
             )
 
-            st.write("")
+        # ========================================
+        # TABELA RESUMO
+        # ========================================
 
         st.divider()
 
-        # ========================================
-        # TABELA COMPARATIVA
-        # ========================================
-
         st.markdown(
-            "### Comparativo das áreas"
+            "### Resumo do diagnóstico"
         )
 
         st.dataframe(
@@ -1416,56 +1495,8 @@ with aba5:
         )
 
         # ========================================
-        # PRINCIPAIS PROBLEMAS EE10
+        # PROBLEMAS DA ÁREA
         # ========================================
-
-        st.markdown(
-            "### Principais problemas - EE10"
-        )
-
-        st.dataframe(
-            causas_ee10,
-            width="stretch",
-            hide_index=True
-        )
-
-        # ========================================
-        # DRILL-DOWN DINÂMICO
-        # ========================================
-
-        st.divider()
-
-        st.markdown(
-            "### Detalhamento dos problemas"
-        )
-
-        area_selecionada = st.selectbox(
-            "Área para análise",
-            options=[
-                "ETE - EE10",
-                "UTA - CAPTAÇÃO"
-            ],
-            key="area_detalhamento_pi"
-        )
-
-        # ========================================
-        # ESCOLHA DO INVENTÁRIO
-        # ========================================
-
-        if (
-            area_selecionada
-            == "ETE - EE10"
-        ):
-
-            inventario_area = (
-                inventario_ee10_consolidado
-            )
-
-        else:
-
-            inventario_area = (
-                inventario_captacao_avaliado
-            )
 
         problemas_area = (
             inventario_area[
@@ -1476,9 +1507,11 @@ with aba5:
             .copy()
         )
 
-        # ========================================
-        # ÁREA SEM PROBLEMAS
-        # ========================================
+        st.divider()
+
+        st.markdown(
+            "### Detalhamento dos problemas"
+        )
 
         if problemas_area.empty:
 
@@ -1508,7 +1541,9 @@ with aba5:
                 default=classificacoes_disponiveis,
                 key=(
                     "filtro_classificacao_"
-                    + area_selecionada
+                    + str(database_diagnostico)
+                    + "_"
+                    + str(elemento_diagnostico)
                 )
             )
 
@@ -1527,7 +1562,7 @@ with aba5:
             # FILTRO POR ELEMENTO
             # ========================================
 
-            elementos_disponiveis = sorted(
+            elementos_diagnostico = sorted(
                 problemas_filtrados[
                     "elemento"
                 ]
@@ -1538,11 +1573,13 @@ with aba5:
 
             filtro_elemento = st.multiselect(
                 "Elemento",
-                options=elementos_disponiveis,
-                default=elementos_disponiveis,
+                options=elementos_diagnostico,
+                default=elementos_diagnostico,
                 key=(
                     "filtro_elemento_"
-                    + area_selecionada
+                    + str(database_diagnostico)
+                    + "_"
+                    + str(elemento_diagnostico)
                 )
             )
 
@@ -1565,23 +1602,25 @@ with aba5:
                 problemas_filtrados
             )
 
-            erros_filtrados = (
-                problemas_filtrados[
-                    "classificacao_qualidade"
-                ]
-                .eq("ERRO")
-                .sum()
+            erros_filtrados = int(
+                (
+                    problemas_filtrados[
+                        "classificacao_qualidade"
+                    ] == "ERRO"
+                ).sum()
             )
 
-            alertas_filtrados = (
-                problemas_filtrados[
-                    "classificacao_qualidade"
-                ]
-                .eq("ALERTA")
-                .sum()
+            alertas_filtrados = int(
+                (
+                    problemas_filtrados[
+                        "classificacao_qualidade"
+                    ] == "ALERTA"
+                ).sum()
             )
 
-            col_a, col_b, col_c = st.columns(3)
+            col_a, col_b, col_c = st.columns(
+                3
+            )
 
             col_a.metric(
                 "Problemas encontrados",
@@ -1590,16 +1629,12 @@ with aba5:
 
             col_b.metric(
                 "Erros",
-                int(
-                    erros_filtrados
-                )
+                erros_filtrados
             )
 
             col_c.metric(
                 "Alertas",
-                int(
-                    alertas_filtrados
-                )
+                alertas_filtrados
             )
 
             # ========================================
@@ -1607,11 +1642,14 @@ with aba5:
             # ========================================
 
             colunas_detalhamento = [
+                "caminho_elemento",
                 "elemento",
                 "atributo",
                 "data_reference",
                 "uom",
                 "classificacao_qualidade",
+                "categoria_erro",
+                "codigo_erro",
                 "observacao_qualidade"
             ]
 
@@ -1630,3 +1668,86 @@ with aba5:
                 width="stretch",
                 hide_index=True
             )
+
+            # ========================================
+            # CAUSAS DOS PROBLEMAS
+            # ========================================
+
+            st.divider()
+
+            st.markdown(
+                "### Causas dos problemas"
+            )
+
+            colunas_necessarias = {
+                "categoria_erro",
+                "codigo_erro",
+                "classificacao_qualidade"
+            }
+
+            if colunas_necessarias.issubset(
+                problemas_filtrados.columns
+            ):
+
+                resumo_causas = (
+                    problemas_filtrados
+                    .groupby(
+                        [
+                            "categoria_erro",
+                            "codigo_erro",
+                            "classificacao_qualidade"
+                        ],
+                        dropna=False
+                    )
+                    .size()
+                    .reset_index(
+                        name="quantidade"
+                    )
+                    .sort_values(
+                        "quantidade",
+                        ascending=False
+                    )
+                )
+
+                st.dataframe(
+                    resumo_causas,
+                    width="stretch",
+                    hide_index=True
+                )
+
+                # ========================================
+                # DISTRIBUIÇÃO POR CATEGORIA
+                # ========================================
+
+                resumo_categoria = (
+                    problemas_filtrados
+                    .groupby(
+                        "categoria_erro",
+                        dropna=False
+                    )
+                    .size()
+                    .reset_index(
+                        name="quantidade"
+                    )
+                    .sort_values(
+                        "quantidade",
+                        ascending=False
+                    )
+                )
+
+                st.markdown(
+                    "#### Distribuição por categoria"
+                )
+
+                st.bar_chart(
+                    resumo_categoria,
+                    x="categoria_erro",
+                    y="quantidade"
+                )
+
+            else:
+
+                st.warning(
+                    "As colunas categoria_erro e codigo_erro "
+                    "não estão disponíveis no diagnóstico."
+                )
