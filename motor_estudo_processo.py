@@ -291,3 +291,419 @@ def gerar_ranking_correlacoes(
     )
 
     return ranking
+
+def analisar_defasagem(
+    historico_principal,
+    historico_comparacao,
+    nome_principal="variavel_principal",
+    nome_comparacao="variavel_comparacao",
+    defasagens_minutos=(
+        -120,
+        -90,
+        -60,
+        -30,
+        0,
+        30,
+        60,
+        90,
+        120
+    ),
+    tolerancia="30min",
+    minimo_pontos=10
+):
+
+    # =========================
+    # PREPARAÇÃO DAS SÉRIES
+    # =========================
+
+    principal = historico_principal[
+        [
+            "data_hora",
+            "valor_numerico"
+        ]
+    ].copy()
+
+    principal = principal.rename(
+        columns={
+            "valor_numerico": nome_principal
+        }
+    )
+
+    comparacao = historico_comparacao[
+        [
+            "data_hora",
+            "valor_numerico"
+        ]
+    ].copy()
+
+    comparacao = comparacao.rename(
+        columns={
+            "valor_numerico": nome_comparacao
+        }
+    )
+
+    principal["data_hora"] = pd.to_datetime(
+        principal["data_hora"],
+        errors="coerce"
+    )
+
+    comparacao["data_hora"] = pd.to_datetime(
+        comparacao["data_hora"],
+        errors="coerce"
+    )
+
+    principal[nome_principal] = pd.to_numeric(
+        principal[nome_principal],
+        errors="coerce"
+    )
+
+    comparacao[nome_comparacao] = pd.to_numeric(
+        comparacao[nome_comparacao],
+        errors="coerce"
+    )
+
+    principal = principal.dropna(
+        subset=[
+            "data_hora",
+            nome_principal
+        ]
+    )
+
+    comparacao = comparacao.dropna(
+        subset=[
+            "data_hora",
+            nome_comparacao
+        ]
+    )
+
+    principal = principal.sort_values(
+        "data_hora"
+    )
+
+    comparacao = comparacao.sort_values(
+        "data_hora"
+    )
+
+    # =========================
+    # TESTE DAS DEFASAGENS
+    # =========================
+
+    resultados = []
+
+    for minutos in defasagens_minutos:
+
+        comparacao_deslocada = (
+            comparacao.copy()
+        )
+
+        comparacao_deslocada[
+            "data_hora"
+        ] = (
+            comparacao_deslocada[
+                "data_hora"
+            ]
+            + pd.Timedelta(
+                minutes=minutos
+            )
+        )
+
+        alinhado = pd.merge_asof(
+            principal,
+            comparacao_deslocada,
+            on="data_hora",
+            direction="nearest",
+            tolerance=pd.Timedelta(
+                tolerancia
+            )
+        )
+
+        alinhado = alinhado.dropna(
+            subset=[
+                nome_principal,
+                nome_comparacao
+            ]
+        )
+
+        pontos_validos = len(
+            alinhado
+        )
+
+        correlacao = None
+        status = "DADOS INSUFICIENTES"
+
+        if pontos_validos >= minimo_pontos:
+
+            desvio_principal = alinhado[
+                nome_principal
+            ].std()
+
+            desvio_comparacao = alinhado[
+                nome_comparacao
+            ].std()
+
+            if (
+                desvio_principal == 0
+                or desvio_comparacao == 0
+                or pd.isna(desvio_principal)
+                or pd.isna(desvio_comparacao)
+            ):
+
+                status = "SEM VARIAÇÃO"
+
+            else:
+
+                valor_correlacao = alinhado[
+                    nome_principal
+                ].corr(
+                    alinhado[
+                        nome_comparacao
+                    ]
+                )
+
+                if pd.isna(
+                    valor_correlacao
+                ):
+
+                    status = "NÃO CALCULÁVEL"
+
+                else:
+
+                    correlacao = round(
+                        float(
+                            valor_correlacao
+                        ),
+                        3
+                    )
+
+                    status = "OK"
+
+        resultados.append({
+            "defasagem_minutos": minutos,
+            "correlacao": correlacao,
+            "pontos_validos": pontos_validos,
+            "status": status
+        })
+
+    return pd.DataFrame(
+        resultados
+    )
+
+def interpretar_defasagem(
+    resultado_defasagem
+):
+
+    if resultado_defasagem.empty:
+
+        return {
+            "melhor_defasagem": None,
+            "melhor_correlacao": None,
+            "correlacao_base": None,
+            "ganho_correlacao": None,
+            "relevancia": "SEM DADOS",
+            "interpretacao": (
+                "Não existem dados suficientes "
+                "para avaliar a relação temporal."
+            )
+        }
+
+    dados = resultado_defasagem.copy()
+
+    dados["correlacao"] = pd.to_numeric(
+        dados["correlacao"],
+        errors="coerce"
+    )
+
+    dados_validos = dados.dropna(
+        subset=["correlacao"]
+    )
+
+    if dados_validos.empty:
+
+        return {
+            "melhor_defasagem": None,
+            "melhor_correlacao": None,
+            "correlacao_base": None,
+            "ganho_correlacao": None,
+            "relevancia": "NÃO CALCULÁVEL",
+            "interpretacao": (
+                "Não foi possível calcular uma "
+                "associação temporal válida."
+            )
+        }
+
+    # =========================
+    # CORRELAÇÃO SEM DEFASAGEM
+    # =========================
+
+    linha_base = dados_validos[
+        dados_validos[
+            "defasagem_minutos"
+        ] == 0
+    ]
+
+    if linha_base.empty:
+
+        correlacao_base = None
+
+    else:
+
+        correlacao_base = float(
+            linha_base.iloc[0][
+                "correlacao"
+            ]
+        )
+
+    # =========================
+    # MELHOR ASSOCIAÇÃO
+    # =========================
+
+    dados_validos[
+        "correlacao_abs"
+    ] = dados_validos[
+        "correlacao"
+    ].abs()
+
+    indice_melhor = dados_validos[
+        "correlacao_abs"
+    ].idxmax()
+
+    melhor = dados_validos.loc[
+        indice_melhor
+    ]
+
+    melhor_defasagem = int(
+        melhor[
+            "defasagem_minutos"
+        ]
+    )
+
+    melhor_correlacao = float(
+        melhor[
+            "correlacao"
+        ]
+    )
+
+    pontos_validos = int(
+        melhor[
+            "pontos_validos"
+        ]
+    )
+
+    # =========================
+    # GANHO SOBRE O TEMPO ZERO
+    # =========================
+
+    if correlacao_base is None:
+
+        ganho_correlacao = None
+
+    else:
+
+        ganho_correlacao = (
+            abs(melhor_correlacao)
+            - abs(correlacao_base)
+        )
+
+        ganho_correlacao = round(
+            ganho_correlacao,
+            3
+        )
+
+    # =========================
+    # RELEVÂNCIA TEMPORAL
+    # =========================
+
+    forca = abs(
+        melhor_correlacao
+    )
+
+    if (
+        forca >= 0.70
+        and ganho_correlacao is not None
+        and ganho_correlacao >= 0.15
+        and pontos_validos >= 30
+    ):
+
+        relevancia = "ALTA"
+
+    elif (
+        forca >= 0.50
+        and ganho_correlacao is not None
+        and ganho_correlacao >= 0.10
+        and pontos_validos >= 20
+    ):
+
+        relevancia = "MODERADA"
+
+    elif (
+        forca >= 0.30
+        and ganho_correlacao is not None
+        and ganho_correlacao >= 0.05
+    ):
+
+        relevancia = "BAIXA"
+
+    else:
+
+        relevancia = "MUITO BAIXA"
+
+    # =========================
+    # INTERPRETAÇÃO
+    # =========================
+
+    if melhor_defasagem == 0:
+
+        interpretacao = (
+            "A maior associação foi observada "
+            "sem deslocamento temporal. "
+            "Não foi identificada evidência de "
+            "defasagem relevante."
+        )
+
+    elif relevancia in [
+        "ALTA",
+        "MODERADA"
+    ]:
+
+        interpretacao = (
+            f"Foi observada uma associação temporal "
+            f"mais relevante em {melhor_defasagem} minutos. "
+            f"A correlação passou de "
+            f"{correlacao_base} no tempo zero para "
+            f"{round(melhor_correlacao, 3)}. "
+            f"Esse resultado indica uma relação temporal "
+            f"que merece investigação de engenharia, "
+            f"mas não comprova causalidade."
+        )
+
+    else:
+
+        interpretacao = (
+            f"A maior associação ocorreu em "
+            f"{melhor_defasagem} minutos, com correlação "
+            f"{round(melhor_correlacao, 3)}. "
+            f"Entretanto, a evidência temporal foi "
+            f"classificada como {relevancia}. "
+            f"O resultado isolado não é suficiente para "
+            f"indicar uma relação temporal relevante."
+        )
+
+    return {
+        "melhor_defasagem": melhor_defasagem,
+        "melhor_correlacao": round(
+            melhor_correlacao,
+            3
+        ),
+        "correlacao_base": (
+            round(
+                correlacao_base,
+                3
+            )
+            if correlacao_base is not None
+            else None
+        ),
+        "ganho_correlacao": ganho_correlacao,
+        "pontos_validos": pontos_validos,
+        "relevancia": relevancia,
+        "interpretacao": interpretacao
+    }

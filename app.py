@@ -36,7 +36,9 @@ from motor_estudo_processo import (
     preparar_historico,
     alinhar_series,
     calcular_correlacao,
-    gerar_ranking_correlacoes
+    gerar_ranking_correlacoes,
+    analisar_defasagem,
+    interpretar_defasagem,
 )
 
 @st.cache_data(ttl=300)
@@ -1761,8 +1763,7 @@ with aba5:
                     "As colunas categoria_erro e codigo_erro "
                     "não estão disponíveis no diagnóstico."
                 )
-
-  # =========================
+# =========================
 # ABA 6 - ESTUDO DE PROCESSO
 # =========================
 
@@ -1774,6 +1775,10 @@ with aba6:
         "Módulo destinado à investigação, análise "
         "e melhoria de processos industriais."
     )
+
+    # =========================
+    # CONFIGURAÇÃO DO ESTUDO
+    # =========================
 
     st.subheader("Configuração do Estudo")
 
@@ -1833,6 +1838,10 @@ with aba6:
             options=databases_estudo,
             key="database_estudo_processo"
         )
+
+        # =========================
+        # PRIMEIRO NÍVEL
+        # =========================
 
         elementos_estudo = listar_elementos(
             servidor=servidor_estudo,
@@ -1917,7 +1926,9 @@ with aba6:
             # VARIÁVEL PRINCIPAL
             # =========================
 
-            st.subheader("Variável Principal")
+            st.subheader(
+                "Variável Principal"
+            )
 
             variavel_principal = st.selectbox(
                 "Variável que será o foco do estudo",
@@ -1929,7 +1940,9 @@ with aba6:
             # ESCOPO
             # =========================
 
-            st.subheader("Escopo de Análise")
+            st.subheader(
+                "Escopo de Análise"
+            )
 
             escopo_analise = st.radio(
                 (
@@ -1955,7 +1968,9 @@ with aba6:
             # DADOS DO ESTUDO
             # =========================
 
-            st.subheader("Dados do Estudo")
+            st.subheader(
+                "Dados do Estudo"
+            )
 
             periodos_af = {
                 "Últimas 24 horas": "*-24h",
@@ -1971,10 +1986,16 @@ with aba6:
 
                 fim_estudo = "*"
 
-                if st.button(
+                # =========================
+                # BOTÃO DE CARREGAMENTO
+                # =========================
+
+                carregar_estudo = st.button(
                     "🔬 Carregar dados do estudo",
                     key="carregar_dados_estudo"
-                ):
+                )
+
+                if carregar_estudo:
 
                     try:
 
@@ -2012,12 +2033,6 @@ with aba6:
                             )
 
                         else:
-
-                            st.success(
-                                f"{len(historico_principal)} "
-                                "registros válidos da variável "
-                                "principal."
-                            )
 
                             # =========================
                             # OUTRAS VARIÁVEIS
@@ -2071,15 +2086,7 @@ with aba6:
                             # RANKING
                             # =========================
 
-                            if not historicos_comparacao:
-
-                                st.warning(
-                                    "Nenhuma outra variável "
-                                    "numérica com histórico foi "
-                                    "encontrada para comparação."
-                                )
-
-                            else:
+                            if historicos_comparacao:
 
                                 ranking_correlacoes = (
                                     gerar_ranking_correlacoes(
@@ -2095,30 +2102,387 @@ with aba6:
                                     )
                                 )
 
-                                st.subheader(
-                                    "🔗 Variáveis Relacionadas"
-                                )
+                            else:
 
-                                if ranking_correlacoes.empty:
+                                ranking_correlacoes = pd.DataFrame()
 
-                                    st.warning(
-                                        "Não foi possível calcular "
-                                        "correlações com os dados "
-                                        "disponíveis."
-                                    )
+                            # =========================
+                            # SALVAR RESULTADOS
+                            # =========================
 
-                                else:
+                            st.session_state[
+                                "estudo_processo_carregado"
+                            ] = True
 
-                                    st.dataframe(
-                                        ranking_correlacoes,
-                                        width="stretch"
-                                    )
+                            st.session_state[
+                                "historico_principal_estudo"
+                            ] = historico_principal
+
+                            st.session_state[
+                                "historicos_comparacao_estudo"
+                            ] = historicos_comparacao
+
+                            st.session_state[
+                                "ranking_correlacoes_estudo"
+                            ] = ranking_correlacoes
+
+                            st.session_state[
+                                "variavel_principal_resultado_estudo"
+                            ] = variavel_principal
+
+                            st.session_state[
+                                "database_resultado_estudo"
+                            ] = database_estudo
+
+                            st.session_state[
+                                "caminho_resultado_estudo"
+                            ] = caminho_formatado
+
+                            st.session_state[
+                                "periodo_resultado_estudo"
+                            ] = periodo_estudo
+
+                            # =========================
+                            # LIMPAR ESCOLHA TEMPORAL
+                            # =========================
+
+                            if (
+                                "variavel_defasagem_estudo"
+                                in st.session_state
+                            ):
+
+                                del st.session_state[
+                                    "variavel_defasagem_estudo"
+                                ]
+
+                            st.success(
+                                "Dados do estudo carregados "
+                                "com sucesso."
+                            )
 
                     except Exception as erro:
 
                         st.error(
                             "Não foi possível executar o estudo: "
                             f"{erro}"
+                        )
+
+                # ========================================
+                # RESULTADOS PERSISTENTES
+                # FORA DO BOTÃO
+                # ========================================
+
+                if st.session_state.get(
+                    "estudo_processo_carregado",
+                    False
+                ):
+
+                    historico_principal_resultado = (
+                        st.session_state[
+                            "historico_principal_estudo"
+                        ]
+                    )
+
+                    historicos_comparacao_resultado = (
+                        st.session_state[
+                            "historicos_comparacao_estudo"
+                        ]
+                    )
+
+                    ranking_resultado = (
+                        st.session_state[
+                            "ranking_correlacoes_estudo"
+                        ]
+                    )
+
+                    variavel_principal_resultado = (
+                        st.session_state[
+                            "variavel_principal_resultado_estudo"
+                        ]
+                    )
+
+                    database_resultado = (
+                        st.session_state[
+                            "database_resultado_estudo"
+                        ]
+                    )
+
+                    caminho_resultado = (
+                        st.session_state[
+                            "caminho_resultado_estudo"
+                        ]
+                    )
+
+                    periodo_resultado = (
+                        st.session_state[
+                            "periodo_resultado_estudo"
+                        ]
+                    )
+
+                    # =========================
+                    # CABEÇALHO DO RESULTADO
+                    # =========================
+
+                    st.divider()
+
+                    st.markdown(
+                        "## Resultado do Estudo"
+                    )
+
+                    st.caption(
+                        f"{database_resultado} > "
+                        f"{caminho_resultado} | "
+                        f"Variável principal: "
+                        f"{variavel_principal_resultado} | "
+                        f"Período: {periodo_resultado}"
+                    )
+
+                    st.success(
+                        f"{len(historico_principal_resultado)} "
+                        "registros válidos da variável principal."
+                    )
+
+                    # =========================
+                    # RANKING PERSISTENTE
+                    # =========================
+
+                    st.subheader(
+                        "🔗 Variáveis Relacionadas"
+                    )
+
+                    if ranking_resultado.empty:
+
+                        st.warning(
+                            "Não foi possível calcular "
+                            "correlações com os dados "
+                            "disponíveis."
+                        )
+
+                    else:
+
+                        st.dataframe(
+                            ranking_resultado,
+                            width="stretch",
+                            hide_index=True
+                        )
+
+                    # =========================
+                    # ANÁLISE TEMPORAL
+                    # =========================
+
+                    if historicos_comparacao_resultado:
+
+                        st.divider()
+
+                        st.subheader(
+                            "⏱ Análise de Defasagem Temporal"
+                        )
+
+                        variaveis_defasagem = list(
+                            historicos_comparacao_resultado.keys()
+                        )
+
+                        # =========================
+                        # VALIDAR VALOR ANTIGO
+                        # =========================
+
+                        valor_atual_defasagem = (
+                            st.session_state.get(
+                                "variavel_defasagem_estudo"
+                            )
+                        )
+
+                        if (
+                            valor_atual_defasagem
+                            not in variaveis_defasagem
+                        ):
+
+                            if (
+                                "variavel_defasagem_estudo"
+                                in st.session_state
+                            ):
+
+                                del st.session_state[
+                                    "variavel_defasagem_estudo"
+                                ]
+
+                        # =========================
+                        # SELEÇÃO DA VARIÁVEL
+                        # =========================
+
+                        variavel_defasagem = st.selectbox(
+                            "Variável para análise temporal",
+                            options=variaveis_defasagem,
+                            key="variavel_defasagem_estudo"
+                        )
+
+                        # =========================
+                        # CÁLCULO DA DEFASAGEM
+                        # =========================
+
+                        resultado_defasagem = (
+                            analisar_defasagem(
+                                historico_principal_resultado,
+                                historicos_comparacao_resultado[
+                                    variavel_defasagem
+                                ],
+                                nome_principal=(
+                                    "variavel_principal"
+                                ),
+                                nome_comparacao=(
+                                    "variavel_comparacao"
+                                )
+                            )
+                        )
+
+                        st.caption(
+                            f"Análise temporal: "
+                            f"{variavel_principal_resultado} × "
+                            f"{variavel_defasagem}"
+                        )
+
+                        st.dataframe(
+                            resultado_defasagem,
+                            width="stretch",
+                            hide_index=True
+                        )
+
+                        # =========================
+                        # INTERPRETAÇÃO DA DEFASAGEM
+                        # =========================
+
+                        interpretacao_defasagem = (
+                            interpretar_defasagem(
+                                resultado_defasagem
+                            )
+                        )
+
+                        st.markdown(
+                            "### 🧠 Interpretação da Análise Temporal"
+                        )
+
+                        col1, col2, col3, col4 = st.columns(
+                            4
+                        )
+
+                        # =========================
+                        # MELHOR DEFASAGEM
+                        # =========================
+
+                        if (
+                            interpretacao_defasagem[
+                                "melhor_defasagem"
+                            ] is not None
+                        ):
+
+                            melhor_defasagem_texto = (
+                                f"{interpretacao_defasagem['melhor_defasagem']} min"
+                            )
+
+                        else:
+
+                            melhor_defasagem_texto = "-"
+
+                        col1.metric(
+                            "Melhor defasagem",
+                            melhor_defasagem_texto
+                        )
+
+                        # =========================
+                        # MELHOR CORRELAÇÃO
+                        # =========================
+
+                        if (
+                            interpretacao_defasagem[
+                                "melhor_correlacao"
+                            ] is not None
+                        ):
+
+                            melhor_correlacao_texto = (
+                                f"{interpretacao_defasagem['melhor_correlacao']:.3f}"
+                            )
+
+                        else:
+
+                            melhor_correlacao_texto = "-"
+
+                        col2.metric(
+                            "Melhor correlação",
+                            melhor_correlacao_texto
+                        )
+
+                        # =========================
+                        # CORRELAÇÃO BASE
+                        # =========================
+
+                        if (
+                            interpretacao_defasagem[
+                                "correlacao_base"
+                            ] is not None
+                        ):
+
+                            correlacao_base_texto = (
+                                f"{interpretacao_defasagem['correlacao_base']:.3f}"
+                            )
+
+                        else:
+
+                            correlacao_base_texto = "-"
+
+                        col3.metric(
+                            "Correlação em 0 min",
+                            correlacao_base_texto
+                        )
+
+                        # =========================
+                        # RELEVÂNCIA
+                        # =========================
+
+                        col4.metric(
+                            "Relevância temporal",
+                            interpretacao_defasagem[
+                                "relevancia"
+                            ]
+                        )
+
+                        # =========================
+                        # GANHO DA CORRELAÇÃO
+                        # =========================
+
+                        if (
+                            interpretacao_defasagem[
+                                "ganho_correlacao"
+                            ] is not None
+                        ):
+
+                            st.caption(
+                                f"Ganho absoluto de correlação "
+                                f"em relação ao tempo zero: "
+                                f"{interpretacao_defasagem['ganho_correlacao']:.3f}"
+                            )
+
+                        # =========================
+                        # INTERPRETAÇÃO TEXTUAL
+                        # =========================
+
+                        st.info(
+                            interpretacao_defasagem[
+                                "interpretacao"
+                            ]
+                        )
+
+                        st.caption(
+                            "A análise de defasagem identifica "
+                            "associações temporais entre variáveis. "
+                            "Ela não comprova relação de causa e efeito."
+                        )
+
+                    else:
+
+                        st.warning(
+                            "Nenhuma outra variável numérica "
+                            "com histórico está disponível "
+                            "para análise temporal."
                         )
 
             else:
