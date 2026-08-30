@@ -27,7 +27,16 @@ from adaptador_pi_af import (
     consolidar_diagnostico_area,
     resumir_causas_problemas,
     listar_databases,
-    listar_elementos
+    listar_elementos,
+    listar_atributos,
+    carregar_historico_atributo,
+)
+
+from motor_estudo_processo import (
+    preparar_historico,
+    alinhar_series,
+    calcular_correlacao,
+    gerar_ranking_correlacoes
 )
 
 @st.cache_data(ttl=300)
@@ -283,12 +292,13 @@ with st.expander("🔎 Pipeline de processamento"):
 # ABAS
 # =========================
 
-aba1, aba2, aba3, aba4, aba5 = st.tabs([
+aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
     "Visão Operacional",
     "Qualidade dos Dados",
     "Assistente",
     "Configuração da Fonte",
-    "Governança PI/AF"
+    "Governança PI/AF",
+    "Estudo de Processo"
 ])
 
 
@@ -1751,3 +1761,383 @@ with aba5:
                     "As colunas categoria_erro e codigo_erro "
                     "não estão disponíveis no diagnóstico."
                 )
+
+  # =========================
+# ABA 6 - ESTUDO DE PROCESSO
+# =========================
+
+with aba6:
+
+    st.header("🔬 Estudo de Processo")
+
+    st.info(
+        "Módulo destinado à investigação, análise "
+        "e melhoria de processos industriais."
+    )
+
+    st.subheader("Configuração do Estudo")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        tipo_estudo = st.selectbox(
+            "Tipo de estudo",
+            options=[
+                "Investigação de anomalia",
+                "Melhoria de processo",
+                "Comparação operacional",
+                "Exploração de dados"
+            ],
+            key="tipo_estudo_processo"
+        )
+
+    with col2:
+
+        periodo_estudo = st.selectbox(
+            "Período inicial de análise",
+            options=[
+                "Últimas 24 horas",
+                "Últimos 7 dias",
+                "Últimos 30 dias",
+                "Período personalizado"
+            ],
+            key="periodo_estudo_processo"
+        )
+
+    objetivo_estudo = st.text_area(
+        "Objetivo do estudo",
+        placeholder=(
+            "Ex.: Identificar quais variáveis de processo "
+            "estão relacionadas à variação observada..."
+        ),
+        key="objetivo_estudo_processo"
+    )
+
+    # =========================
+    # CONTEXTO DO PROCESSO
+    # =========================
+
+    st.subheader("Contexto do Processo")
+
+    servidor_estudo = "CE-SRV11"
+
+    try:
+
+        databases_estudo = obter_databases_cache(
+            servidor_estudo
+        )
+
+        database_estudo = st.selectbox(
+            "Database AF",
+            options=databases_estudo,
+            key="database_estudo_processo"
+        )
+
+        elementos_estudo = listar_elementos(
+            servidor=servidor_estudo,
+            database=database_estudo
+        )
+
+        area_estudo = st.selectbox(
+            "Área / Elemento",
+            options=elementos_estudo,
+            key="area_estudo_processo"
+        )
+
+        caminho_estudo = [
+            area_estudo
+        ]
+
+        # =========================
+        # NAVEGAÇÃO DINÂMICA AF
+        # =========================
+
+        nivel = 2
+        max_niveis = 10
+
+        while nivel <= max_niveis:
+
+            subelementos_estudo = listar_elementos(
+                servidor=servidor_estudo,
+                database=database_estudo,
+                caminho_elementos=caminho_estudo
+            )
+
+            if not subelementos_estudo:
+                break
+
+            caminho_key = "__".join(
+                caminho_estudo
+            )
+
+            elemento_nivel = st.selectbox(
+                f"Nível {nivel}",
+                options=[
+                    "Usar este elemento"
+                ] + subelementos_estudo,
+                key=(
+                    f"nivel_estudo_processo_"
+                    f"{database_estudo}_"
+                    f"{caminho_key}"
+                )
+            )
+
+            if elemento_nivel == "Usar este elemento":
+                break
+
+            caminho_estudo.append(
+                elemento_nivel
+            )
+
+            nivel += 1
+
+        caminho_formatado = " > ".join(
+            caminho_estudo
+        )
+
+        st.success(
+            f"📍 Elemento selecionado: "
+            f"{database_estudo} > {caminho_formatado}"
+        )
+
+        # =========================
+        # ATRIBUTOS
+        # =========================
+
+        atributos_estudo = listar_atributos(
+            servidor=servidor_estudo,
+            database=database_estudo,
+            caminho_elementos=caminho_estudo
+        )
+
+        if atributos_estudo:
+
+            # =========================
+            # VARIÁVEL PRINCIPAL
+            # =========================
+
+            st.subheader("Variável Principal")
+
+            variavel_principal = st.selectbox(
+                "Variável que será o foco do estudo",
+                options=atributos_estudo,
+                key="variavel_principal_estudo"
+            )
+
+            # =========================
+            # ESCOPO
+            # =========================
+
+            st.subheader("Escopo de Análise")
+
+            escopo_analise = st.radio(
+                (
+                    "Onde o sistema poderá buscar relações "
+                    "com a variável principal?"
+                ),
+                options=[
+                    "Somente o elemento selecionado",
+                    "Área selecionada",
+                    "Áreas e bases selecionadas",
+                    "Exploração ampliada"
+                ],
+                index=0,
+                key="escopo_analise_processo",
+                help=(
+                    "Define até onde o motor de análise poderá "
+                    "buscar variáveis relacionadas ao objetivo "
+                    "do estudo."
+                )
+            )
+
+            # =========================
+            # DADOS DO ESTUDO
+            # =========================
+
+            st.subheader("Dados do Estudo")
+
+            periodos_af = {
+                "Últimas 24 horas": "*-24h",
+                "Últimos 7 dias": "*-7d",
+                "Últimos 30 dias": "*-30d"
+            }
+
+            if periodo_estudo != "Período personalizado":
+
+                inicio_estudo = periodos_af[
+                    periodo_estudo
+                ]
+
+                fim_estudo = "*"
+
+                if st.button(
+                    "🔬 Carregar dados do estudo",
+                    key="carregar_dados_estudo"
+                ):
+
+                    try:
+
+                        # =========================
+                        # VARIÁVEL PRINCIPAL
+                        # =========================
+
+                        with st.spinner(
+                            "Consultando dados históricos no PI..."
+                        ):
+
+                            historico_principal = (
+                                carregar_historico_atributo(
+                                    servidor=servidor_estudo,
+                                    database=database_estudo,
+                                    caminho_elementos=caminho_estudo,
+                                    nome_atributo=variavel_principal,
+                                    inicio=inicio_estudo,
+                                    fim=fim_estudo
+                                )
+                            )
+
+                            historico_principal = (
+                                preparar_historico(
+                                    historico_principal
+                                )
+                            )
+
+                        if historico_principal.empty:
+
+                            st.warning(
+                                "Não foram encontrados dados "
+                                "numéricos suficientes para a "
+                                "variável principal."
+                            )
+
+                        else:
+
+                            st.success(
+                                f"{len(historico_principal)} "
+                                "registros válidos da variável "
+                                "principal."
+                            )
+
+                            # =========================
+                            # OUTRAS VARIÁVEIS
+                            # =========================
+
+                            historicos_comparacao = {}
+
+                            with st.spinner(
+                                "Analisando as demais variáveis "
+                                "do elemento..."
+                            ):
+
+                                for nome_atributo in atributos_estudo:
+
+                                    if (
+                                        nome_atributo
+                                        == variavel_principal
+                                    ):
+                                        continue
+
+                                    try:
+
+                                        historico_atributo = (
+                                            carregar_historico_atributo(
+                                                servidor=servidor_estudo,
+                                                database=database_estudo,
+                                                caminho_elementos=caminho_estudo,
+                                                nome_atributo=nome_atributo,
+                                                inicio=inicio_estudo,
+                                                fim=fim_estudo
+                                            )
+                                        )
+
+                                        historico_preparado = (
+                                            preparar_historico(
+                                                historico_atributo
+                                            )
+                                        )
+
+                                        if not historico_preparado.empty:
+
+                                            historicos_comparacao[
+                                                nome_atributo
+                                            ] = historico_preparado
+
+                                    except Exception:
+
+                                        continue
+
+                            # =========================
+                            # RANKING
+                            # =========================
+
+                            if not historicos_comparacao:
+
+                                st.warning(
+                                    "Nenhuma outra variável "
+                                    "numérica com histórico foi "
+                                    "encontrada para comparação."
+                                )
+
+                            else:
+
+                                ranking_correlacoes = (
+                                    gerar_ranking_correlacoes(
+                                        historico_principal=(
+                                            historico_principal
+                                        ),
+                                        historicos_comparacao=(
+                                            historicos_comparacao
+                                        ),
+                                        nome_principal=(
+                                            "variavel_principal"
+                                        )
+                                    )
+                                )
+
+                                st.subheader(
+                                    "🔗 Variáveis Relacionadas"
+                                )
+
+                                if ranking_correlacoes.empty:
+
+                                    st.warning(
+                                        "Não foi possível calcular "
+                                        "correlações com os dados "
+                                        "disponíveis."
+                                    )
+
+                                else:
+
+                                    st.dataframe(
+                                        ranking_correlacoes,
+                                        width="stretch"
+                                    )
+
+                    except Exception as erro:
+
+                        st.error(
+                            "Não foi possível executar o estudo: "
+                            f"{erro}"
+                        )
+
+            else:
+
+                st.info(
+                    "A seleção de período personalizado "
+                    "será implementada na próxima etapa."
+                )
+
+        else:
+
+            st.warning(
+                "O elemento selecionado não possui "
+                "atributos disponíveis para análise."
+            )
+
+    except Exception as erro:
+
+        st.error(
+            "Não foi possível consultar a estrutura PI/AF: "
+            f"{erro}"
+        )
