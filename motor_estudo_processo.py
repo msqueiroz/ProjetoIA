@@ -252,13 +252,64 @@ def gerar_ranking_correlacoes(
                 nome_b=nome_variavel
             )
 
+            tipo_relacao = classificar_tipo_relacao(
+                nome_principal,
+                nome_variavel
+            )
+
+            prioridade = calcular_prioridade_investigacao(
+                tipo_relacao=tipo_relacao,
+                correlacao=resultado[
+                    "correlacao"
+                ],
+                confiabilidade=resultado[
+                    "confiabilidade"
+                ],
+                pontos_validos=resultado[
+                    "pontos_validos"
+                ]
+            )
+
             ranking.append({
                 "variavel": nome_variavel,
-                "correlacao": resultado["correlacao"],
-                "direcao": resultado["direcao"],
-                "classificacao": resultado["classificacao"],
-                "confiabilidade": resultado["confiabilidade"],
-                "pontos_validos": resultado["pontos_validos"]
+
+                "tipo_variavel": classificar_tipo_variavel(
+                    nome_variavel
+                ),
+
+                "categoria_engenharia": classificar_categoria_engenharia(
+                    nome_variavel
+                ),
+
+                "tipo_relacao": tipo_relacao,
+
+                "correlacao": resultado[
+                    "correlacao"
+                ],
+
+                "direcao": resultado[
+                    "direcao"
+                ],
+
+                "classificacao": resultado[
+                    "classificacao"
+                ],
+
+                "confiabilidade": resultado[
+                    "confiabilidade"
+                ],
+
+                "pontos_validos": resultado[
+                    "pontos_validos"
+                ],
+
+                "score_prioridade": prioridade[
+                    "score_prioridade"
+                ],
+
+                "prioridade_investigacao": prioridade[
+                    "prioridade_investigacao"
+                ]
             })
 
         except Exception:
@@ -489,22 +540,10 @@ def analisar_defasagem(
     )
 
 def interpretar_defasagem(
-    resultado_defasagem
+    resultado_defasagem,
+    nome_principal="Variável principal",
+    nome_comparacao="Variável de comparação"
 ):
-
-    if resultado_defasagem.empty:
-
-        return {
-            "melhor_defasagem": None,
-            "melhor_correlacao": None,
-            "correlacao_base": None,
-            "ganho_correlacao": None,
-            "relevancia": "SEM DADOS",
-            "interpretacao": (
-                "Não existem dados suficientes "
-                "para avaliar a relação temporal."
-            )
-        }
 
     dados = resultado_defasagem.copy()
 
@@ -515,7 +554,7 @@ def interpretar_defasagem(
 
     dados_validos = dados.dropna(
         subset=["correlacao"]
-    )
+    ).copy()
 
     if dados_validos.empty:
 
@@ -524,101 +563,58 @@ def interpretar_defasagem(
             "melhor_correlacao": None,
             "correlacao_base": None,
             "ganho_correlacao": None,
-            "relevancia": "NÃO CALCULÁVEL",
+            "pontos_validos": 0,
+            "relevancia": "NÃO AVALIADA",
+            "direcao_temporal": "Não foi possível determinar",
             "interpretacao": (
-                "Não foi possível calcular uma "
+                "Não foi possível identificar uma "
                 "associação temporal válida."
             )
         }
 
-    # =========================
-    # CORRELAÇÃO SEM DEFASAGEM
-    # =========================
+    dados_validos["correlacao_abs"] = (
+        dados_validos["correlacao"].abs()
+    )
+
+    melhor_linha = dados_validos.loc[
+        dados_validos["correlacao_abs"].idxmax()
+    ]
+
+    melhor_defasagem = int(
+        melhor_linha["defasagem_minutos"]
+    )
+
+    melhor_correlacao = float(
+        melhor_linha["correlacao"]
+    )
+
+    pontos_validos = int(
+        melhor_linha["pontos_validos"]
+    )
 
     linha_base = dados_validos[
-        dados_validos[
-            "defasagem_minutos"
-        ] == 0
+        dados_validos["defasagem_minutos"] == 0
     ]
 
     if linha_base.empty:
 
         correlacao_base = None
-
-    else:
-
-        correlacao_base = float(
-            linha_base.iloc[0][
-                "correlacao"
-            ]
-        )
-
-    # =========================
-    # MELHOR ASSOCIAÇÃO
-    # =========================
-
-    dados_validos[
-        "correlacao_abs"
-    ] = dados_validos[
-        "correlacao"
-    ].abs()
-
-    indice_melhor = dados_validos[
-        "correlacao_abs"
-    ].idxmax()
-
-    melhor = dados_validos.loc[
-        indice_melhor
-    ]
-
-    melhor_defasagem = int(
-        melhor[
-            "defasagem_minutos"
-        ]
-    )
-
-    melhor_correlacao = float(
-        melhor[
-            "correlacao"
-        ]
-    )
-
-    pontos_validos = int(
-        melhor[
-            "pontos_validos"
-        ]
-    )
-
-    # =========================
-    # GANHO SOBRE O TEMPO ZERO
-    # =========================
-
-    if correlacao_base is None:
-
         ganho_correlacao = None
 
     else:
 
-        ganho_correlacao = (
-            abs(melhor_correlacao)
-            - abs(correlacao_base)
+        correlacao_base = float(
+            linha_base.iloc[0]["correlacao"]
         )
 
         ganho_correlacao = round(
-            ganho_correlacao,
+            abs(melhor_correlacao)
+            - abs(correlacao_base),
             3
         )
 
-    # =========================
-    # RELEVÂNCIA TEMPORAL
-    # =========================
-
-    forca = abs(
-        melhor_correlacao
-    )
-
     if (
-        forca >= 0.70
+        abs(melhor_correlacao) >= 0.70
         and ganho_correlacao is not None
         and ganho_correlacao >= 0.15
         and pontos_validos >= 30
@@ -627,7 +623,7 @@ def interpretar_defasagem(
         relevancia = "ALTA"
 
     elif (
-        forca >= 0.50
+        abs(melhor_correlacao) >= 0.50
         and ganho_correlacao is not None
         and ganho_correlacao >= 0.10
         and pontos_validos >= 20
@@ -636,7 +632,7 @@ def interpretar_defasagem(
         relevancia = "MODERADA"
 
     elif (
-        forca >= 0.30
+        abs(melhor_correlacao) >= 0.30
         and ganho_correlacao is not None
         and ganho_correlacao >= 0.05
     ):
@@ -647,17 +643,55 @@ def interpretar_defasagem(
 
         relevancia = "MUITO BAIXA"
 
-    # =========================
-    # INTERPRETAÇÃO
-    # =========================
+    # --------------------------------------------------
+    # INTERPRETAÇÃO DA DIREÇÃO TEMPORAL
+    # --------------------------------------------------
+
+    if melhor_defasagem == 0:
+
+        direcao_temporal = (
+            f"{nome_principal} e {nome_comparacao} "
+            "apresentam maior associação sem "
+            "defasagem temporal."
+        )
+
+    elif melhor_defasagem < 0:
+
+        minutos = abs(
+            melhor_defasagem
+        )
+
+        direcao_temporal = (
+            f"{nome_principal} antecede "
+            f"{nome_comparacao} em aproximadamente "
+            f"{minutos} minutos."
+        )
+
+    else:
+
+        minutos = abs(
+            melhor_defasagem
+        )
+
+        direcao_temporal = (
+            f"{nome_comparacao} antecede "
+            f"{nome_principal} em aproximadamente "
+            f"{minutos} minutos."
+        )
+
+    # --------------------------------------------------
+    # TEXTO DE INTERPRETAÇÃO
+    # --------------------------------------------------
 
     if melhor_defasagem == 0:
 
         interpretacao = (
-            "A maior associação foi observada "
-            "sem deslocamento temporal. "
-            "Não foi identificada evidência de "
-            "defasagem relevante."
+            f"A maior associação entre "
+            f"{nome_principal} e {nome_comparacao} "
+            f"ocorreu sem deslocamento temporal, "
+            f"com correlação {melhor_correlacao:.3f}. "
+            "Não foi identificada evidência de uma "
+            "defasagem temporal relevante."
         )
 
     elif relevancia in [
@@ -666,26 +700,36 @@ def interpretar_defasagem(
     ]:
 
         interpretacao = (
-            f"Foi observada uma associação temporal "
-            f"mais relevante em {melhor_defasagem} minutos. "
-            f"A correlação passou de "
-            f"{correlacao_base} no tempo zero para "
-            f"{round(melhor_correlacao, 3)}. "
-            f"Esse resultado indica uma relação temporal "
-            f"que merece investigação de engenharia, "
-            f"mas não comprova causalidade."
+            f"{direcao_temporal} "
+            f"A correlação máxima foi "
+            f"{melhor_correlacao:.3f}"
+        )
+
+        if correlacao_base is not None:
+
+            interpretacao += (
+                f", comparada a "
+                f"{correlacao_base:.3f} "
+                "sem defasagem"
+            )
+
+        interpretacao += (
+            ". A associação temporal merece "
+            "investigação de engenharia, mas não "
+            "representa evidência de causalidade."
         )
 
     else:
 
         interpretacao = (
-            f"A maior associação ocorreu em "
-            f"{melhor_defasagem} minutos, com correlação "
-            f"{round(melhor_correlacao, 3)}. "
+            f"A maior associação ocorreu com "
+            f"defasagem de {melhor_defasagem} minutos, "
+            f"com correlação {melhor_correlacao:.3f}. "
+            f"{direcao_temporal} "
             f"Entretanto, a evidência temporal foi "
             f"classificada como {relevancia}. "
-            f"O resultado isolado não é suficiente para "
-            f"indicar uma relação temporal relevante."
+            "O resultado isolado não é suficiente "
+            "para indicar uma relação temporal relevante."
         )
 
     return {
@@ -705,5 +749,464 @@ def interpretar_defasagem(
         "ganho_correlacao": ganho_correlacao,
         "pontos_validos": pontos_validos,
         "relevancia": relevancia,
+        "direcao_temporal": direcao_temporal,
         "interpretacao": interpretacao
     }
+
+def gerar_teste_defasagem_conhecida():
+
+    datas = pd.date_range(
+        start="2026-01-01 00:00:00",
+        periods=20,
+        freq="10min"
+    )
+
+    valores_base = list(
+        range(20)
+    )
+
+    principal = pd.DataFrame({
+        "data_hora": datas,
+        "valor": valores_base
+    })
+
+    comparacao = pd.DataFrame({
+        "data_hora": datas + pd.Timedelta(
+            minutes=30
+        ),
+        "valor": valores_base
+    })
+
+    principal = preparar_historico(
+        principal
+    )
+
+    comparacao = preparar_historico(
+        comparacao
+    )
+
+    resultado = analisar_defasagem(
+        principal,
+        comparacao,
+        nome_principal="principal",
+        nome_comparacao="comparacao"
+    )
+
+    return resultado
+
+def classificar_tipo_variavel(
+    nome_variavel
+):
+
+    nome = str(
+        nome_variavel
+    ).lower()
+
+    # --------------------------------------------------
+    # STATUS / ESTADO OPERACIONAL
+    # --------------------------------------------------
+
+    termos_status = [
+        "status",
+        "estado",
+        "modo"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_status
+    ):
+
+        return "STATUS/ESTADO"
+
+    # --------------------------------------------------
+    # KPI
+    # --------------------------------------------------
+
+    termos_kpi = [
+        "kpi",
+        "produtividade",
+        "disponibilidade"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_kpi
+    ):
+
+        return "KPI"
+
+    # --------------------------------------------------
+    # VARIÁVEIS FÍSICAS DE PROCESSO
+    #
+    # A prioridade aqui é proposital.
+    # "Corrente Média", por exemplo, continua sendo
+    # tratada como uma variável física de processo.
+    # --------------------------------------------------
+
+    termos_medida = [
+        "vazão",
+        "vazao",
+        "pressão",
+        "pressao",
+        "nível",
+        "nivel",
+        "temperatura",
+        "corrente",
+        "tensão",
+        "tensao",
+        "potência",
+        "potencia",
+        "ph"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_medida
+    ):
+
+        return "MEDIDA"
+
+    # --------------------------------------------------
+    # VARIÁVEIS CALCULADAS / DERIVADAS
+    # --------------------------------------------------
+
+    termos_calculados = [
+        "diferencial",
+        "totalizador",
+        "cálculo",
+        "calculo",
+        "modelo",
+        "estimado",
+        "estimada"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_calculados
+    ):
+
+        return "CALCULADA"
+
+    # --------------------------------------------------
+    # FALLBACK
+    # --------------------------------------------------
+
+    return "NÃO CLASSIFICADA"
+
+def classificar_tipo_relacao(
+    nome_principal,
+    nome_comparacao
+):
+
+    tipo_principal = classificar_tipo_variavel(
+        nome_principal
+    )
+
+    tipo_comparacao = classificar_tipo_variavel(
+        nome_comparacao
+    )
+
+    # Relação entre duas variáveis físicas
+    if (
+        tipo_principal == "MEDIDA"
+        and tipo_comparacao == "MEDIDA"
+    ):
+
+        return "RELAÇÃO DE PROCESSO"
+
+    # Relações envolvendo KPI
+    if (
+        tipo_principal == "KPI"
+        or tipo_comparacao == "KPI"
+    ):
+
+        return "RELAÇÃO DERIVADA / KPI"
+
+    # Relações envolvendo variáveis calculadas
+    if (
+        tipo_principal == "CALCULADA"
+        or tipo_comparacao == "CALCULADA"
+    ):
+
+        return "RELAÇÃO CALCULADA"
+
+    # Estado operacional pode explicar mudanças
+    if (
+        tipo_principal == "STATUS/ESTADO"
+        or tipo_comparacao == "STATUS/ESTADO"
+    ):
+
+        return "RELAÇÃO OPERACIONAL"
+
+    return "RELAÇÃO NÃO CLASSIFICADA"
+
+def calcular_prioridade_investigacao(
+    tipo_relacao,
+    correlacao,
+    confiabilidade,
+    pontos_validos
+):
+    """
+    Calcula a prioridade de investigação de engenharia.
+
+    A correlação funciona como um limitador da prioridade:
+    relações estatisticamente muito fracas não podem receber
+    prioridade alta apenas por serem relações físicas ou
+    possuírem muitos pontos válidos.
+    """
+
+    # ======================================================
+    # VALIDAR CORRELAÇÃO
+    # ======================================================
+
+    try:
+        correlacao = float(correlacao)
+
+        if pd.isna(correlacao):
+            raise ValueError
+
+    except (TypeError, ValueError):
+
+        return {
+            "score_prioridade": 0,
+            "prioridade_investigacao": "NÃO AVALIADA"
+        }
+
+    correlacao_abs = abs(correlacao)
+
+    # ======================================================
+    # PESO DO TIPO DE RELAÇÃO
+    # ======================================================
+
+    pesos_relacao = {
+        "RELAÇÃO DE PROCESSO": 40,
+        "RELAÇÃO OPERACIONAL": 30,
+        "RELAÇÃO CALCULADA": 15,
+        "RELAÇÃO DERIVADA / KPI": 5,
+        "RELAÇÃO NÃO CLASSIFICADA": 10,
+    }
+
+    score = pesos_relacao.get(
+        tipo_relacao,
+        10
+    )
+
+    # ======================================================
+    # PESO DA CORRELAÇÃO
+    # ======================================================
+
+    if correlacao_abs >= 0.80:
+        score += 30
+
+    elif correlacao_abs >= 0.50:
+        score += 22
+
+    elif correlacao_abs >= 0.30:
+        score += 14
+
+    elif correlacao_abs >= 0.10:
+        score += 6
+
+    # ======================================================
+    # PESO DA CONFIABILIDADE
+    # ======================================================
+
+    pesos_confiabilidade = {
+        "ALTA": 20,
+        "MODERADA": 12,
+        "BAIXA": 5,
+    }
+
+    score += pesos_confiabilidade.get(
+        confiabilidade,
+        0
+    )
+
+    # ======================================================
+    # PESO DA QUANTIDADE DE DADOS
+    # ======================================================
+
+    if pontos_validos >= 100:
+        score += 10
+
+    elif pontos_validos >= 30:
+        score += 7
+
+    elif pontos_validos >= 15:
+        score += 3
+
+    # ======================================================
+    # LIMITADORES ESTATÍSTICOS
+    # ======================================================
+    #
+    # Uma relação física pode ser interessante para
+    # investigação, mas correlação muito baixa não deve
+    # receber prioridade elevada somente pelo contexto.
+    # ======================================================
+
+    if correlacao_abs < 0.10:
+
+        prioridade = "MUITO BAIXA"
+
+    elif correlacao_abs < 0.30:
+
+        prioridade = "BAIXA"
+
+    elif correlacao_abs < 0.50:
+
+        if score >= 55:
+            prioridade = "MODERADA"
+        else:
+            prioridade = "BAIXA"
+
+    else:
+
+        if score >= 70:
+            prioridade = "ALTA"
+
+        elif score >= 55:
+            prioridade = "MODERADA"
+
+        elif score >= 35:
+            prioridade = "BAIXA"
+
+        else:
+            prioridade = "MUITO BAIXA"
+
+    return {
+        "score_prioridade": int(score),
+        "prioridade_investigacao": prioridade
+    }
+
+def classificar_categoria_engenharia(
+    nome_variavel
+):
+
+    nome = str(
+        nome_variavel
+    ).lower()
+
+    # --------------------------------------------------
+    # ELÉTRICA
+    # --------------------------------------------------
+
+    termos_eletrica = [
+        "corrente",
+        "tensão",
+        "tensao",
+        "potência",
+        "potencia",
+        "frequência",
+        "frequencia",
+        "fator de potência",
+        "fator de potencia"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_eletrica
+    ):
+
+        return "ELÉTRICA"
+
+    # --------------------------------------------------
+    # DIFERENCIAIS ELÉTRICOS CALCULADOS
+    # Ex.: Diferencial R-S, R-T, S-T
+    # --------------------------------------------------
+
+    if "diferencial" in nome:
+
+        fases_eletricas = [
+            "r-s",
+            "r-t",
+            "s-t"
+        ]
+
+        if any(
+            fase in nome
+            for fase in fases_eletricas
+        ):
+
+            return "ELÉTRICA"
+
+    # --------------------------------------------------
+    # TÉRMICA
+    # --------------------------------------------------
+
+    termos_termica = [
+        "temperatura",
+        "térmica",
+        "termica"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_termica
+    ):
+
+        return "TÉRMICA"
+
+    # --------------------------------------------------
+    # PROCESSO
+    # --------------------------------------------------
+
+    termos_processo = [
+        "vazão",
+        "vazao",
+        "pressão",
+        "pressao",
+        "nível",
+        "nivel",
+        "ph",
+        "volume"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_processo
+    ):
+
+        return "PROCESSO"
+
+    # --------------------------------------------------
+    # ESTADO OPERACIONAL
+    # --------------------------------------------------
+
+    termos_estado = [
+        "status",
+        "estado",
+        "modo"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_estado
+    ):
+
+        return "ESTADO OPERACIONAL"
+
+    # --------------------------------------------------
+    # KPI
+    # --------------------------------------------------
+
+    termos_kpi = [
+        "kpi",
+        "produtividade",
+        "disponibilidade",
+        "eficiência",
+        "eficiencia"
+    ]
+
+    if any(
+        termo in nome
+        for termo in termos_kpi
+    ):
+
+        return "KPI"
+
+    # --------------------------------------------------
+    # NÃO CLASSIFICADA
+    # --------------------------------------------------
+
+    return "NÃO CLASSIFICADA"
