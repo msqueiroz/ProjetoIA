@@ -1190,6 +1190,11 @@ with aba5:
 
         try:
 
+            # Caminho hierárquico selecionado dentro do AF.
+            # Exemplo:
+            # ETE -> TA-1
+            caminho_elementos_governanca = []
+
             elementos_disponiveis = listar_elementos(
                 servidor=servidor_pi,
                 database=database_selecionada,
@@ -1202,6 +1207,54 @@ with aba5:
                     "Elemento / Área",
                     options=elementos_disponiveis,
                     key="elemento_governanca_pi"
+                )
+
+                caminho_elementos_governanca.append(
+                    elemento_selecionado
+                )
+
+                # Permite navegar em níveis abaixo do elemento raiz.
+                # Exemplo:
+                # ETE -> BEQ
+                # ETE -> TA-1
+                # ETE -> TA-2
+                # etc.
+                for nivel in range(1, 10):
+
+                    subelementos_disponiveis = listar_elementos(
+                        servidor=servidor_pi,
+                        database=database_selecionada,
+                        caminho_elementos=caminho_elementos_governanca
+                    )
+
+                    if not subelementos_disponiveis:
+                        break
+
+                    usar_elemento_atual = st.checkbox(
+                        "Usar este elemento para o diagnóstico",
+                        value=False,
+                        key=f"usar_elemento_governanca_{nivel}"
+                    )
+
+                    if usar_elemento_atual:
+                        break
+
+                    subelemento_selecionado = st.selectbox(
+                        f"Subelemento nível {nivel}",
+                        options=subelementos_disponiveis,
+                        key=f"subelemento_governanca_{nivel}"
+                    )
+
+                    caminho_elementos_governanca.append(
+                        subelemento_selecionado
+                    )
+
+                caminho_formatado_governanca = " / ".join(
+                    caminho_elementos_governanca
+                )
+
+                st.caption(
+                    f"Área selecionada: {caminho_formatado_governanca}"
                 )
 
             else:
@@ -1217,7 +1270,6 @@ with aba5:
                 "Não foi possível consultar os elementos "
                 f"da database: {erro}"
             )
-
     # ========================================
     # BOTÃO DE EXECUÇÃO
     # ========================================
@@ -1231,7 +1283,7 @@ with aba5:
 
         if (
             not database_selecionada
-            or not elemento_selecionado
+            or not caminho_elementos_governanca
         ):
 
             st.warning(
@@ -1254,9 +1306,7 @@ with aba5:
                     inventario_area = inventariar_familia(
                         servidor=servidor_pi,
                         database=database_selecionada,
-                        caminho_pai=[
-                            elemento_selecionado
-                        ]
+                        caminho_pai=caminho_elementos_governanca
                     )
 
                     # ========================================
@@ -1273,9 +1323,13 @@ with aba5:
                     # IDENTIFICAÇÃO DA ÁREA
                     # ========================================
 
+                    caminho_formatado_governanca = " / ".join(
+                        caminho_elementos_governanca
+                    )
+
                     nome_area = (
                         f"{database_selecionada}"
-                        f" - {elemento_selecionado}"
+                        f" - {caminho_formatado_governanca}"
                     )
 
                     # ========================================
@@ -1284,8 +1338,7 @@ with aba5:
 
                     comparativo_area = comparar_areas(
                         {
-                            nome_area:
-                                inventario_area
+                            nome_area: inventario_area
                         }
                     )
 
@@ -1313,9 +1366,14 @@ with aba5:
                         "database_diagnostico_pi"
                     ] = database_selecionada
 
+                    # Agora armazenamos o caminho completo
                     st.session_state[
                         "elemento_diagnostico_pi"
-                    ] = elemento_selecionado
+                    ] = caminho_formatado_governanca
+
+                    st.session_state[
+                        "caminho_diagnostico_pi"
+                    ] = caminho_elementos_governanca.copy()
 
                     st.success(
                         "Diagnóstico PI/AF concluído."

@@ -1,6 +1,7 @@
 import sys
 import clr
 import pandas as pd
+import re
 
 
 CAMINHO_AFSDK = (
@@ -13,6 +14,7 @@ sys.path.append(CAMINHO_AFSDK)
 clr.AddReference("OSIsoft.AFSDK")
 
 from OSIsoft.AF import PISystems
+from OSIsoft.AF.PI import PIServers, PIPoint
 
 
 def conectar_af(
@@ -270,6 +272,513 @@ def carregar_historico_atributo(
 
     return df
 
+def carregar_historico_pi_point(
+    servidor_pi,
+    nome_pi_point,
+    inicio,
+    fim
+):
+    """
+    Carrega o histórico diretamente do PI Data Archive
+    a partir do nome de uma PI Point.
+
+    Retorna um DataFrame com as colunas:
+    - data_hora
+    - valor
+    - bom
+
+    Esta função não avalia cálculos AF. Ela consulta os eventos
+    gravados diretamente no PI Data Archive.
+    """
+
+    servidores = PIServers()
+
+    servidor = servidores[
+        servidor_pi
+    ]
+
+    if servidor is None:
+        raise ValueError(
+            f"Servidor PI '{servidor_pi}' não encontrado."
+        )
+
+    try:
+        ponto = PIPoint.FindPIPoint(
+            servidor,
+            nome_pi_point
+        )
+    except Exception as erro:
+        raise ValueError(
+            f"PI Point '{nome_pi_point}' não encontrada: {erro}"
+        ) from erro
+
+    if ponto is None:
+        raise ValueError(
+            f"PI Point '{nome_pi_point}' não encontrada."
+        )
+
+    intervalo = AFTimeRange(
+        inicio,
+        fim
+    )
+
+    try:
+        valores = ponto.RecordedValues(
+            intervalo,
+            AFBoundaryType.Inside,
+            None,
+            False
+        )
+    except Exception as erro:
+        raise RuntimeError(
+            f"Erro ao consultar histórico da PI Point "
+            f"'{nome_pi_point}': {erro}"
+        ) from erro
+
+    registros = []
+
+    for valor_af in valores:
+        try:
+            registros.append({
+                "data_hora": str(valor_af.Timestamp),
+                "valor": str(valor_af.Value),
+                "bom": bool(valor_af.IsGood)
+            })
+        except Exception:
+            continue
+
+    df = pd.DataFrame(
+        registros,
+        columns=[
+            "data_hora",
+            "valor",
+            "bom"
+        ]
+    )
+
+    if not df.empty:
+        df["data_hora"] = pd.to_datetime(
+            df["data_hora"],
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        df = (
+            df
+            .dropna(
+                subset=["data_hora"]
+            )
+            .sort_values(
+                "data_hora"
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+    return df
+
+def identificar_fonte_historico_atributo(
+    servidor,
+    database,
+    caminho_elementos,
+    nome_atributo,
+    servidor_pi_preferencial="ce-srv11"
+):
+    """
+    Identifica a fonte histórica de um atributo AF.
+
+    Estratégia para PI Point:
+    - lê a ConfigString sem forçar atributo.PIPoint;
+    - extrai somente o nome da PI Point;
+    - usa o servidor PI preferencial/operacional;
+    - evita seguir automaticamente referências legadas de servidor
+      presentes na ConfigString.
+
+    Analysis e Formula são identificadas, mas não são
+    resolvidas como PI Point automaticamente.
+    """
+
+    sistema = conectar_af(servidor)
+    banco = sistema.Databases[database]
+
+    if banco is None:
+        raise ValueError(
+            f"Database '{database}' não encontrada."
+        )
+
+    elementos = banco.Elements
+    elemento_atual = None
+
+    for nome_elemento in caminho_elementos:
+        elemento_atual = elementos[nome_elemento]
+
+        if elemento_atual is None:
+            raise ValueError(
+                f"Elemento '{nome_elemento}' não encontrado."
+            )
+
+        elementos = elemento_atual.Elements
+
+    atributo = elemento_atual.Attributes[nome_atributo]
+
+    if atributo is None:
+        raise ValueError(
+            f"Atributo '{nome_atributo}' não encontrado."
+        )
+
+    try:
+        data_reference = str(
+            atributo.DataReferencePlugIn.Name
+        )
+    except Exception:
+        data_reference = ""
+
+    resultado = {
+        "atributo": nome_atributo,
+        "data_reference": data_reference,
+        "tipo_fonte": "DESCONHECIDA",
+        "servidor_pi": None,
+        "pi_point": None,
+        "consulta_direta_disponivel": False,
+        "status": "NAO_AVALIADO",
+        "detalhe": "",
+        "metodo_resolucao": "",
+        "config_string": "",
+        "servidor_configurado": None,
+    }
+
+    # ========================================================
+    # PI POINT
+    # ========================================================
+
+    if data_reference == "PI Point":
+
+        try:
+            config_string = str(
+                atributo.ConfigString or ""
+            ).strip()
+        except Exception:
+            config_string = ""
+
+        resultado["config_string"] = config_string
+
+        # Captura o servidor apenas como diagnóstico.
+        # NÃO usamos esse servidor automaticamente.
+        match_servidor = re.match(
+            r"^\\\\([^\\?]+)",
+            config_string
+        )
+
+        if match_servidor:
+            resultado["servidor_configurado"] = (
+                match_servidor.group(1)
+            )
+
+        # A PI Point é o último componente após "\".
+        # Exemplos aceitos:
+        # \\ce-srv11\OD-TA1-1
+        # \\ce-srv09?GUID\CARGA-DQO-TA1-1?3262
+        match_ponto = re.search(
+            r"\\([^\\?]+)(?:\?\d+)?$",
+            config_string
+        )
+
+        if match_ponto:
+
+            nome_pi_point = (
+                match_ponto.group(1).strip()
+            )
+
+            if nome_pi_point:
+
+                resultado["tipo_fonte"] = "PI_POINT"
+                resultado["servidor_pi"] = (
+                    servidor_pi_preferencial
+                )
+                resultado["pi_point"] = nome_pi_point
+                resultado[
+                    "consulta_direta_disponivel"
+                ] = True
+                resultado["status"] = "OK"
+                resultado["metodo_resolucao"] = (
+                    "CONFIGSTRING_PI_PREFERENCIAL"
+                )
+
+                servidor_configurado = resultado[
+                    "servidor_configurado"
+                ]
+
+                if (
+                    servidor_configurado
+                    and servidor_configurado.lower()
+                    != servidor_pi_preferencial.lower()
+                ):
+                    resultado["detalhe"] = (
+                        "PI Point identificada pela ConfigString. "
+                        f"A configuração AF referencia "
+                        f"'{servidor_configurado}', mas a consulta "
+                        f"histórica será feita no servidor PI "
+                        f"preferencial '{servidor_pi_preferencial}'. "
+                        "O servidor legado não será acessado "
+                        "automaticamente."
+                    )
+                else:
+                    resultado["detalhe"] = (
+                        "PI Point identificada pela ConfigString. "
+                        "Histórico pode ser consultado diretamente "
+                        f"no PI Data Archive "
+                        f"'{servidor_pi_preferencial}'."
+                    )
+
+                return resultado
+
+        # Não força atributo.PIPoint aqui, pois essa resolução
+        # pode bloquear por dezenas de segundos quando há
+        # referências AF legadas ou servidores indisponíveis.
+        resultado["tipo_fonte"] = (
+            "PI_POINT_NAO_RESOLVIDA"
+        )
+        resultado["status"] = (
+            "FONTE_INDISPONIVEL"
+        )
+        resultado["metodo_resolucao"] = (
+            "CONFIGSTRING_NAO_RESOLVIDA"
+        )
+        resultado["detalhe"] = (
+            "O atributo está configurado como PI Point, "
+            "mas o nome da PI Point não pôde ser extraído "
+            "com segurança da ConfigString. A resolução "
+            "atributo.PIPoint foi evitada para impedir "
+            "esperas longas em referências legadas."
+        )
+
+        return resultado
+
+    # ========================================================
+    # ANALYSIS
+    # ========================================================
+
+    if data_reference == "Analysis":
+
+        resultado["tipo_fonte"] = "ANALYSIS"
+        resultado["status"] = (
+            "REQUER_TRATAMENTO_AF"
+        )
+        resultado["metodo_resolucao"] = (
+            "AF_ANALYSIS"
+        )
+        resultado["detalhe"] = (
+            "O atributo é saída de uma AF Analysis. "
+            "Não será tratado automaticamente como PI Point."
+        )
+
+        return resultado
+
+    # ========================================================
+    # FORMULA
+    # ========================================================
+
+    if data_reference == "Formula":
+
+        resultado["tipo_fonte"] = "FORMULA"
+        resultado["status"] = (
+            "REQUER_TRATAMENTO_AF"
+        )
+        resultado["metodo_resolucao"] = (
+            "AF_FORMULA"
+        )
+        resultado["detalhe"] = (
+            "O atributo utiliza Data Reference Formula "
+            "e deve ser tratado pelo AF."
+        )
+
+        return resultado
+
+    # ========================================================
+    # SEM DATA REFERENCE / OUTROS
+    # ========================================================
+
+    if not data_reference:
+
+        resultado["tipo_fonte"] = (
+            "SEM_DATA_REFERENCE"
+        )
+        resultado["status"] = (
+            "SEM_FONTE_HISTORICA_DIRETA"
+        )
+        resultado["detalhe"] = (
+            "O atributo não possui Data Reference "
+            "identificada."
+        )
+
+        return resultado
+
+    resultado["tipo_fonte"] = (
+        data_reference.upper()
+    )
+    resultado["status"] = (
+        "TIPO_NAO_TRATADO"
+    )
+    resultado["detalhe"] = (
+        f"Data Reference '{data_reference}' "
+        f"ainda não possui tratamento específico."
+    )
+
+    return resultado
+
+
+def carregar_historico_inteligente(
+    servidor,
+    database,
+    caminho_elementos,
+    nome_atributo,
+    inicio,
+    fim
+):
+    """
+    Carrega o histórico escolhendo automaticamente
+    a melhor estratégia disponível.
+
+    Estratégia:
+    - PI Point identificada:
+        extrai o nome da PI Point pela ConfigString e consulta
+        diretamente o PI Data Archive preferencial.
+    - Analysis / Formula:
+        não consulta automaticamente o histórico,
+        evitando reavaliações AF lentas.
+    - Outros:
+        retorna diagnóstico de fonte não suportada.
+
+    Retorna:
+    {
+        "dados": DataFrame,
+        "fonte": ...,
+        "estrategia": ...,
+        "status": ...,
+        "detalhe": ...
+    }
+    """
+
+    fonte = identificar_fonte_historico_atributo(
+        servidor=servidor,
+        database=database,
+        caminho_elementos=caminho_elementos,
+        nome_atributo=nome_atributo
+    )
+
+    resultado = {
+        "dados": pd.DataFrame(),
+        "fonte": fonte,
+        "estrategia": "",
+        "status": "NAO_EXECUTADO",
+        "detalhe": ""
+    }
+
+    # ========================================================
+    # PI POINT DIRETA
+    # ========================================================
+
+    if fonte[
+        "consulta_direta_disponivel"
+    ]:
+
+        try:
+
+            dados = carregar_historico_pi_point(
+                servidor_pi=fonte[
+                    "servidor_pi"
+                ],
+                nome_pi_point=fonte[
+                    "pi_point"
+                ],
+                inicio=inicio,
+                fim=fim
+            )
+
+            resultado["dados"] = dados
+
+            resultado["estrategia"] = (
+                "PI_DATA_ARCHIVE_DIRETO"
+            )
+
+            resultado["status"] = "OK"
+
+            resultado["detalhe"] = (
+                "Histórico carregado diretamente "
+                "do PI Data Archive."
+            )
+
+            return resultado
+
+        except Exception as erro:
+
+            mensagem = str(
+                erro
+            )
+
+            resultado["estrategia"] = (
+                "PI_DATA_ARCHIVE_DIRETO"
+            )
+
+            resultado["status"] = (
+                "ERRO_FONTE_PI"
+            )
+
+            resultado["detalhe"] = (
+                mensagem.splitlines()[0]
+                if mensagem
+                else "Erro ao consultar PI Data Archive."
+            )
+
+            return resultado
+
+    # ========================================================
+    # ANALYSIS / FORMULA
+    # ========================================================
+
+    if fonte["tipo_fonte"] in [
+        "ANALYSIS",
+        "FORMULA"
+    ]:
+
+        resultado["estrategia"] = (
+            "AF_CALCULADO_NAO_CONSULTADO"
+        )
+
+        resultado["status"] = (
+            "FONTE_CALCULADA"
+        )
+
+        resultado["detalhe"] = (
+            "Atributo calculado pelo AF. "
+            "A consulta histórica automática foi evitada "
+            "para impedir processamento lento ou "
+            "reavaliação histórica do cálculo."
+        )
+
+        return resultado
+
+    # ========================================================
+    # OUTROS TIPOS
+    # ========================================================
+
+    resultado["estrategia"] = (
+        "FONTE_NAO_SUPORTADA"
+    )
+
+    resultado["status"] = (
+        "SEM_HISTORICO_DIRETO"
+    )
+
+    resultado["detalhe"] = (
+        f"Fonte '{fonte['tipo_fonte']}' "
+        f"não possui estratégia automática "
+        f"de consulta histórica."
+    )
+
+    return resultado
+
 def inventariar_atributos(
     servidor,
     database,
@@ -516,7 +1025,6 @@ REGRAS_ERROS_QUALIDADE = [
         )
     }
 ]
-
 
 def detectar_erro_conhecido(
     valor
@@ -1044,6 +1552,7 @@ def classificar_atributos_engenharia(
     for atributo in resultado["atributo"]:
 
         nome = atributo.lower()
+        categoria = "OUTROS"
 
         if atributo in REGRAS_SEMANTICAS:
 
@@ -1361,7 +1870,6 @@ def aplicar_criticidade_atributos(
 
     return resultado
 
-
 def calcular_qualidade_ponderada(
     inventario_avaliado
 ):
@@ -1615,7 +2123,6 @@ def consolidar_diagnostico_area(
 
     return resultado
 
-
 def resumir_causas_problemas(
     inventarios_avaliados
 ):
@@ -1661,7 +2168,6 @@ def resumir_causas_problemas(
     )
 
     return resumo
-
 
 def comparar_areas(
     areas
