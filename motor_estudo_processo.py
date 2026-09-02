@@ -226,6 +226,7 @@ def calcular_correlacao(
         "confiabilidade": confiabilidade,
         "pontos_validos": pontos_validos
     }
+
 def gerar_ranking_correlacoes(
     historico_principal,
     historicos_comparacao,
@@ -760,7 +761,6 @@ def analisar_defasagem(
 
     return resultado
 
-
 def interpretar_defasagem(
     resultado_defasagem,
     nome_principal="Variável principal",
@@ -975,7 +975,6 @@ def interpretar_defasagem(
         "interpretacao": interpretacao
     }
 
-
 def calcular_score_evidencia_temporal(
     melhor_correlacao,
     correlacao_base,
@@ -1148,8 +1147,6 @@ def calcular_score_evidencia_temporal(
         "score_direcao":
             score_direcao,
     }
-
-
 
 def gerar_hipotese_engenharia_temporal(
     variavel_principal,
@@ -1405,13 +1402,12 @@ def gerar_hipotese_engenharia_temporal(
             ),
     }
 
-
-
 def consolidar_investigacao_assistida(
     variavel_principal,
     hipoteses,
     cobertura_principal_pct=None,
-    registros_principal=None
+    registros_principal=None,
+    conhecimento_documental=None,
 ):
     """
     Consolida as hipóteses determinísticas em um briefing
@@ -1422,12 +1418,66 @@ def consolidar_investigacao_assistida(
     - listar evidências-chave;
     - apontar lacunas de confiança;
     - sugerir próximos passos;
-    - preparar um contexto estruturado para futura camada de IA.
+    - incorporar conhecimento documental recuperado;
+    - preparar contexto estruturado para a camada de IA.
 
-    A função não gera diagnóstico causal.
+    IMPORTANTE:
+    - esta função não consulta documentos diretamente;
+    - esta função não gera diagnóstico causal;
+    - conhecimento documental é tratado como referência;
+    - evidência operacional continua vindo do motor de engenharia.
     """
 
+    # ---------------------------------------------------------
+    # NORMALIZA CONHECIMENTO DOCUMENTAL
+    # ---------------------------------------------------------
+
+    if conhecimento_documental is None:
+        conhecimento_documental = []
+
+    # ---------------------------------------------------------
+    # SEM HIPÓTESES
+    # ---------------------------------------------------------
+
     if not hipoteses:
+
+        contexto_ia = {
+            "variavel_principal":
+                variavel_principal,
+
+            "principal_hipotese":
+                None,
+
+            "outras_hipoteses":
+                [],
+
+            "cobertura_principal_pct":
+                cobertura_principal_pct,
+
+            "registros_principal":
+                registros_principal,
+
+            "conhecimento_documental":
+                conhecimento_documental,
+
+            "lacunas":
+                [
+                    (
+                        "Não há hipóteses temporais suficientes "
+                        "para consolidar a investigação."
+                    )
+                ],
+
+            "proximos_passos":
+                [],
+
+            "regra_de_seguranca":
+                (
+                    "Não afirmar causalidade nem recomendar controle "
+                    "automático com base apenas nas evidências "
+                    "disponíveis."
+                ),
+        }
 
         return {
             "resumo":
@@ -1435,14 +1485,30 @@ def consolidar_investigacao_assistida(
                     "Não há hipóteses temporais suficientes "
                     "para consolidar uma investigação assistida."
                 ),
-            "principal_hipotese": None,
-            "evidencias_chave": [],
-            "lacunas": [],
-            "proximos_passos": [],
-            "contexto_ia": {},
+
+            "principal_hipotese":
+                None,
+
+            "evidencias_chave":
+                [],
+
+            "lacunas":
+                contexto_ia["lacunas"],
+
+            "proximos_passos":
+                [],
+
+            "conhecimento_documental":
+                conhecimento_documental,
+
+            "contexto_ia":
+                contexto_ia,
         }
 
-    # Ordena por score temporal e depois por pontos válidos.
+    # ---------------------------------------------------------
+    # ORDENA HIPÓTESES
+    # ---------------------------------------------------------
+
     hipoteses_ordenadas = sorted(
         hipoteses,
         key=lambda item: (
@@ -1460,6 +1526,10 @@ def consolidar_investigacao_assistida(
 
     principal = hipoteses_ordenadas[0]
 
+    # ---------------------------------------------------------
+    # EVIDÊNCIAS-CHAVE
+    # ---------------------------------------------------------
+
     evidencias_chave = []
 
     for item in hipoteses_ordenadas[:3]:
@@ -1467,14 +1537,20 @@ def consolidar_investigacao_assistida(
         evidencias_chave.append(
             (
                 f"{item['variavel']} → "
-                f"defasagem {str(item['defasagem']).replace('+', '')}; "
-                f"correlação {float(item['melhor_correlacao']):.3f}; "
+                f"defasagem "
+                f"{str(item['defasagem']).replace('+', '')}; "
+                f"correlação "
+                f"{float(item['melhor_correlacao']):.3f}; "
                 f"{int(item['pontos_validos'])} pares; "
                 f"score temporal "
                 f"{int(item['score_evidencia_temporal'])}/100 "
                 f"({item['classificacao_evidencia_temporal']})."
             )
         )
+
+    # ---------------------------------------------------------
+    # LACUNAS
+    # ---------------------------------------------------------
 
     lacunas = []
 
@@ -1526,6 +1602,19 @@ def consolidar_investigacao_assistida(
             )
         )
 
+    if not conhecimento_documental:
+
+        lacunas.append(
+            (
+                "Nenhum conhecimento documental foi associado "
+                "à investigação atual."
+            )
+        )
+
+    # ---------------------------------------------------------
+    # PRÓXIMOS PASSOS
+    # ---------------------------------------------------------
+
     proximos_passos = [
         (
             "Verificar se a defasagem da principal hipótese é "
@@ -1536,14 +1625,23 @@ def consolidar_investigacao_assistida(
             "aeração/estado dos aeradores e qualidade afluente."
         ),
         (
+            "Confrontar as evidências calculadas com as referências "
+            "e relações físicas recuperadas da documentação técnica."
+        ),
+        (
             "Repetir o estudo em outra janela de 7 dias e depois em "
             "30 dias para avaliar estabilidade do padrão."
         ),
         (
             "Registrar a avaliação do engenheiro de processo sobre "
-            "plausibilidade física antes de qualquer recomendação operacional."
+            "plausibilidade física antes de qualquer recomendação "
+            "operacional."
         ),
     ]
+
+    # ---------------------------------------------------------
+    # RESUMO
+    # ---------------------------------------------------------
 
     resumo = (
         f"A principal hipótese de investigação para "
@@ -1557,59 +1655,95 @@ def consolidar_investigacao_assistida(
         "não como causa confirmada."
     )
 
+    # ---------------------------------------------------------
+    # CONTEXTO PARA IA
+    # ---------------------------------------------------------
+
     contexto_ia = {
         "variavel_principal":
             variavel_principal,
+
         "principal_hipotese": {
             "variavel":
                 principal["variavel"],
+
             "defasagem":
                 principal["defasagem"],
+
             "melhor_correlacao":
                 principal["melhor_correlacao"],
+
             "correlacao_sem_defasagem":
                 principal["correlacao_sem_defasagem"],
+
             "ganho_abs_correlacao":
                 principal["ganho_abs_correlacao"],
+
             "pontos_validos":
                 principal["pontos_validos"],
+
             "score_evidencia_temporal":
                 principal["score_evidencia_temporal"],
+
             "classificacao_evidencia_temporal":
                 principal["classificacao_evidencia_temporal"],
         },
+
         "outras_hipoteses":
             hipoteses_ordenadas[1:3],
+
         "cobertura_principal_pct":
             cobertura_principal_pct,
+
         "registros_principal":
             registros_principal,
+
+        # NOVA CAMADA
+        "conhecimento_documental":
+            conhecimento_documental,
+
         "lacunas":
             lacunas,
+
         "proximos_passos":
             proximos_passos,
+
         "regra_de_seguranca":
             (
                 "Não afirmar causalidade nem recomendar controle "
-                "automático com base apenas nestas evidências."
+                "automático com base apenas nestas evidências. "
+                "O conhecimento documental deve ser tratado como "
+                "referência técnica e sua revisão e aplicabilidade "
+                "devem ser consideradas."
             ),
     }
+
+    # ---------------------------------------------------------
+    # RETORNO
+    # ---------------------------------------------------------
 
     return {
         "resumo":
             resumo,
+
         "principal_hipotese":
             principal,
+
         "evidencias_chave":
             evidencias_chave,
+
         "lacunas":
             lacunas,
+
         "proximos_passos":
             proximos_passos,
+
+        "conhecimento_documental":
+            conhecimento_documental,
+
         "contexto_ia":
             contexto_ia,
     }
-
 
 def gerar_teste_defasagem_conhecida():
 
@@ -1774,7 +1908,6 @@ def classificar_tipo_variavel(
     # --------------------------------------------------
 
     return "NÃO CLASSIFICADA"
-
 
 def classificar_tipo_relacao(
     nome_principal,
@@ -2123,7 +2256,6 @@ def classificar_categoria_engenharia(
             return "ENERGIA / ELÉTRICA"
 
     return "NÃO CLASSIFICADA"
-
 
 def classificar_relevancia_engenharia(nome_variavel):
     """

@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
+import hashlib
 from adaptador_pi_af import (
     listar_elementos,
     listar_atributos,
@@ -20,6 +21,14 @@ from motor_estudo_processo import (
 from adaptador_ia import (
     verificar_ollama,
     consultar_ia,
+)
+
+import tempfile
+from pathlib import Path
+
+from gerenciador_conhecimento import (
+    criar_trechos_pdf,
+    buscar_trechos,
 )
 
 
@@ -1253,6 +1262,201 @@ def carregar_variaveis_comparacao(
     detalhe_execucao.empty()
 
     return historicos_comparacao
+
+# ==========================================================
+# BASE DE CONHECIMENTO DOCUMENTAL
+# ==========================================================
+
+def renderizar_base_conhecimento():
+    """
+    Permite carregar um manual técnico em PDF e mantê-lo
+    processado na sessão do Streamlit.
+
+    Nesta fase da POC:
+    - o documento é carregado localmente;
+    - o texto é dividido em trechos pesquisáveis;
+    - os trechos ficam em session_state;
+    - o motor de processo não depende do caminho físico do PDF.
+
+    Futuramente a mesma camada poderá receber documentos
+    vindos de SharePoint, planilhas e outras fontes.
+    """
+
+    st.divider()
+
+    st.subheader(
+        "📚 Base de Conhecimento de Engenharia"
+    )
+
+    st.caption(
+        "Carregue um manual técnico para complementar a investigação "
+        "com referências documentais. O documento não substitui os "
+        "dados do PI nem as evidências calculadas pelo motor."
+    )
+
+    arquivo_manual = st.file_uploader(
+        "Manual ou documento técnico (PDF)",
+        type=["pdf"],
+        key="arquivo_base_conhecimento_ete",
+        help=(
+            "Para a POC, utilize o MO-ETE-001. "
+            "A arquitetura foi preparada para outras fontes no futuro."
+        ),
+    )
+
+    # ------------------------------------------------------
+    # NENHUM NOVO ARQUIVO SELECIONADO
+    # ------------------------------------------------------
+
+    if arquivo_manual is None:
+
+        documento_atual = st.session_state.get(
+            "documento_base_conhecimento_ete"
+        )
+
+        trechos_atuais = st.session_state.get(
+            "trechos_base_conhecimento_ete",
+            []
+        )
+
+        if documento_atual and trechos_atuais:
+
+            nome_documento = documento_atual.get(
+                "nome",
+                "Documento técnico"
+            )
+
+            st.success(
+                f"✅ Base documental ativa: **{nome_documento}** — "
+                f"{len(trechos_atuais)} trechos disponíveis."
+            )
+
+        else:
+
+            st.info(
+                "Nenhum documento técnico foi carregado nesta sessão. "
+                "A investigação continuará funcionando somente com as "
+                "evidências calculadas a partir dos dados do processo."
+            )
+
+        return
+
+    # ------------------------------------------------------
+    # IDENTIFICA O CONTEÚDO DO ARQUIVO
+    # ------------------------------------------------------
+
+    conteudo_pdf = arquivo_manual.getvalue()
+
+    hash_documento = hashlib.sha256(
+        conteudo_pdf
+    ).hexdigest()
+
+    hash_atual = st.session_state.get(
+        "hash_base_conhecimento_ete"
+    )
+
+    trechos_atuais = st.session_state.get(
+        "trechos_base_conhecimento_ete",
+        []
+    )
+
+    # Evita reprocessar o mesmo PDF a cada rerun do Streamlit.
+    if hash_atual == hash_documento and trechos_atuais:
+
+        st.success(
+            f"✅ **{arquivo_manual.name}** já está indexado nesta sessão — "
+            f"{len(trechos_atuais)} trechos disponíveis."
+        )
+
+        return
+
+    caminho_temporario = None
+
+    try:
+
+        with st.spinner(
+            "Lendo e indexando o documento técnico..."
+        ):
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            ) as arquivo_temporario:
+
+                arquivo_temporario.write(
+                    conteudo_pdf
+                )
+
+                caminho_temporario = Path(
+                    arquivo_temporario.name
+                )
+
+            trechos = criar_trechos_pdf(
+                caminho_temporario
+            )
+
+        if not trechos:
+
+            st.warning(
+                "O PDF foi recebido, mas nenhum texto pesquisável "
+                "foi extraído."
+            )
+
+            return
+
+        documento = {
+            "nome": arquivo_manual.name,
+            "tipo": "PDF",
+            "origem": "LOCAL",
+            "hash_sha256": hash_documento,
+            "total_trechos": len(trechos),
+        }
+
+        st.session_state[
+            "documento_base_conhecimento_ete"
+        ] = documento
+
+        st.session_state[
+            "trechos_base_conhecimento_ete"
+        ] = trechos
+
+        st.session_state[
+            "hash_base_conhecimento_ete"
+        ] = hash_documento
+
+        # Uma nova base documental muda o contexto disponível para a IA.
+        st.session_state[
+            "resultado_ia_estudo_processo"
+        ] = None
+
+        st.success(
+            f"✅ **{arquivo_manual.name}** indexado com sucesso — "
+            f"{len(trechos)} trechos pesquisáveis."
+        )
+
+        st.caption(
+            "O documento foi processado localmente e seus trechos "
+            "ficaram disponíveis para a investigação desta sessão."
+        )
+
+    except Exception as erro:
+
+        st.error(
+            "Não foi possível processar o documento técnico: "
+            f"{erro}"
+        )
+
+    finally:
+
+        if caminho_temporario is not None:
+
+            try:
+                caminho_temporario.unlink(
+                    missing_ok=True
+                )
+            except Exception:
+                pass
+
 
 # ==========================================================
 # INTERPRETAÇÃO COM IA
@@ -2887,6 +3091,120 @@ def executar_estudo_processo(
                             cobertura_pct
                         )
 
+                    # ==========================================
+                    # CONHECIMENTO DOCUMENTAL DA INVESTIGAÇÃO
+                    # ==========================================
+
+                    conhecimento_documental = []
+
+                    trechos_conhecimento = st.session_state.get(
+                        "trechos_base_conhecimento_ete",
+                        []
+                    )
+
+                    documento_conhecimento = st.session_state.get(
+                        "documento_base_conhecimento_ete"
+                    )
+
+                    consulta_documental = None
+
+                    if trechos_conhecimento:
+
+                        termos_consulta = [
+                            str(variavel_principal)
+                        ]
+
+                        for hipotese_item in (
+                            hipoteses_para_consolidacao[:3]
+                        ):
+
+                            variavel_hipotese = hipotese_item.get(
+                                "variavel"
+                            )
+
+                            if variavel_hipotese:
+                                termos_consulta.append(
+                                    str(variavel_hipotese)
+                                )
+
+                        # Termos físicos complementares ajudam a busca
+                        # documental do POC sem alterar a análise estatística.
+                        termos_consulta.extend([
+                            "oxigênio dissolvido",
+                            "tanque de aeração",
+                            "tempo de detenção",
+                            "carga orgânica",
+                            "vazão",
+                        ])
+
+                        consulta_documental = " ".join(
+                            termos_consulta
+                        )
+
+                        resultados_documentais = buscar_trechos(
+                            trechos=trechos_conhecimento,
+                            consulta=consulta_documental,
+                            limite=5,
+                        )
+
+                        for resultado in resultados_documentais:
+
+                            conhecimento_documental.append({
+                                "documento": (
+                                    documento_conhecimento.get(
+                                        "nome",
+                                        "Documento técnico"
+                                    )
+                                    if isinstance(
+                                        documento_conhecimento,
+                                        dict
+                                    )
+                                    else str(
+                                        documento_conhecimento
+                                        or "Documento técnico"
+                                    )
+                                ),
+                                "tipo": (
+                                    documento_conhecimento.get(
+                                        "tipo",
+                                        "PDF"
+                                    )
+                                    if isinstance(
+                                        documento_conhecimento,
+                                        dict
+                                    )
+                                    else "PDF"
+                                ),
+                                "origem": (
+                                    documento_conhecimento.get(
+                                        "origem",
+                                        "LOCAL"
+                                    )
+                                    if isinstance(
+                                        documento_conhecimento,
+                                        dict
+                                    )
+                                    else "LOCAL"
+                                ),
+                                "pagina": resultado.get(
+                                    "pagina"
+                                ),
+                                "id_trecho": resultado.get(
+                                    "id_trecho"
+                                ),
+                                "pontuacao_busca": resultado.get(
+                                    "pontuacao_busca"
+                                ),
+                                "termos_encontrados": resultado.get(
+                                    "termos_encontrados",
+                                    []
+                                ),
+                                "texto": resultado.get(
+                                    "texto",
+                                    ""
+                                ),
+                            })
+
                     investigacao = (
                         consolidar_investigacao_assistida(
                             variavel_principal=
@@ -2899,6 +3217,8 @@ def executar_estudo_processo(
                                 len(
                                     historico_principal
                                 ),
+                            conhecimento_documental=
+                                conhecimento_documental,
                         )
                     )
 
@@ -2920,6 +3240,86 @@ def executar_estudo_processo(
                             "resumo"
                         ]
                     )
+
+                    # ==========================================
+                    # REFERÊNCIAS DOCUMENTAIS RECUPERADAS
+                    # ==========================================
+
+                    if conhecimento_documental:
+
+                        st.markdown(
+                            "### 📚 Conhecimento documental recuperado"
+                        )
+
+                        st.caption(
+                            "Trechos recuperados automaticamente da base "
+                            "documental a partir da variável principal e das "
+                            "hipóteses desta investigação."
+                        )
+
+                        for indice_doc, item_doc in enumerate(
+                            conhecimento_documental,
+                            start=1
+                        ):
+
+                            pagina_doc = item_doc.get(
+                                "pagina"
+                            )
+
+                            documento_doc = item_doc.get(
+                                "documento",
+                                "Documento técnico"
+                            )
+
+                            titulo_doc = (
+                                f"Referência {indice_doc} — "
+                                f"{documento_doc}"
+                            )
+
+                            if pagina_doc is not None:
+                                titulo_doc += (
+                                    f" — pág. {pagina_doc}"
+                                )
+
+                            with st.expander(
+                                titulo_doc,
+                                expanded=(indice_doc == 1)
+                            ):
+
+                                st.write(
+                                    item_doc.get(
+                                        "texto",
+                                        ""
+                                    )
+                                )
+
+                                termos_doc = item_doc.get(
+                                    "termos_encontrados",
+                                    []
+                                )
+
+                                if termos_doc:
+                                    st.caption(
+                                        "Termos relacionados: "
+                                        + ", ".join(termos_doc)
+                                    )
+
+                        if consulta_documental:
+
+                            with st.expander(
+                                "🔎 Consulta documental utilizada"
+                            ):
+                                st.write(
+                                    consulta_documental
+                                )
+
+                    else:
+
+                        st.caption(
+                            "📚 Nenhuma referência documental foi associada. "
+                            "Carregue um manual na Base de Conhecimento para "
+                            "enriquecer a investigação."
+                        )
 
                     col_evidencias, col_lacunas = st.columns(
                         2
@@ -3104,6 +3504,12 @@ def renderizar_estudo_processo():
         ),
         key="objetivo_estudo_processo"
     )
+
+    # ======================================================
+    # BASE DE CONHECIMENTO
+    # ======================================================
+
+    renderizar_base_conhecimento()
 
     # ======================================================
     # CONTEXTO DO PROCESSO
