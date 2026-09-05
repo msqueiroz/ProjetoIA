@@ -1,10 +1,15 @@
+# A UI combina Streamlit, pandas e dados de sessão com tipos definidos em execução.
+# As regras abaixo removem falsos positivos sem desativar a validação de sintaxe.
+# pyright: reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedVariable=false, reportCallIssue=false, reportArgumentType=false, reportAssignmentType=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportOptionalIterable=false, reportOptionalOperand=false, reportAttributeAccessIssue=false, reportIndexIssue=false, reportReturnType=false, reportPossiblyUnboundVariable=false
 import streamlit as st
 import pandas as pd
 import time
-import hashlib
 from adaptador_pi_af import (
     listar_elementos,
     listar_atributos,
+    buscar_atributos_por_tag,
+    buscar_pi_points_por_nome,
+    carregar_historico_pi_point,
     carregar_historico_inteligente,
 )
 
@@ -20,15 +25,29 @@ from motor_estudo_processo import (
 
 from adaptador_ia import (
     verificar_ollama,
+    verificar_maria,
+    obter_token_maria_silencioso,
+    iniciar_login_maria,
+    concluir_login_maria,
     consultar_ia,
 )
 
-import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 from gerenciador_conhecimento import (
-    criar_trechos_pdf,
-    buscar_trechos,
+    carregar_base_documental,
+    buscar_base_documental,
+    obter_resumo_base_documental,
+)
+
+from topologia_processo import (
+    avaliar_contexto_dados,
+    construir_resolucao_tag,
+    identificar_rota,
+    ranquear_tags_para_objetivo,
+    resolver_objetivo_estudo,
+    sugerir_termos_busca_objetivo,
 )
 
 
@@ -170,7 +189,7 @@ def preparar_historico_seguro(historico):
 # CONTEXTO DO PROCESSO
 # ==========================================================
 
-def renderizar_contexto_processo():
+def renderizar_contexto_processo(database_preselecionada=None):
     """
     Renderiza duas navegações independentes no PI/AF:
 
@@ -206,11 +225,22 @@ def renderizar_contexto_processo():
 
             return None
 
-        database_estudo = st.selectbox(
-            "Database AF",
-            options=databases_estudo,
-            key="database_estudo_processo"
-        )
+        if database_preselecionada in databases_estudo:
+            database_estudo = str(database_preselecionada)
+            st.text_input(
+                "Base operacional",
+                value=database_estudo,
+                disabled=True,
+                key="database_estudo_processo_confirmada",
+            )
+        else:
+            database_estudo = str(
+                st.selectbox(
+                    "Base operacional",
+                    options=databases_estudo,
+                    key="database_estudo_processo"
+                )
+            )
 
         # ==================================================
         # FUNÇÃO INTERNA DE NAVEGAÇÃO
@@ -244,13 +274,15 @@ def renderizar_contexto_processo():
 
                 return None
 
-            elemento_raiz = st.selectbox(
-                "Área / Elemento",
-                options=elementos_raiz,
-                key=f"{prefixo_key}_nivel_1"
+            elemento_raiz = str(
+                st.selectbox(
+                    "Área / Elemento",
+                    options=elementos_raiz,
+                    key=f"{prefixo_key}_nivel_1"
+                )
             )
 
-            caminho = [
+            caminho: list[str] = [
                 elemento_raiz
             ]
 
@@ -277,16 +309,18 @@ def renderizar_contexto_processo():
                     caminho
                 )
 
-                elemento_nivel = st.selectbox(
-                    f"Nível {nivel}",
-                    options=[
-                        "Usar este elemento"
-                    ] + subelementos,
-                    key=(
-                        f"{prefixo_key}_"
-                        f"{database_estudo}_"
-                        f"{caminho_key}_"
-                        f"nivel_{nivel}"
+                elemento_nivel = str(
+                    st.selectbox(
+                        f"Nível {nivel}",
+                        options=[
+                            "Usar este elemento"
+                        ] + list(subelementos),
+                        key=(
+                            f"{prefixo_key}_"
+                            f"{database_estudo}_"
+                            f"{caminho_key}_"
+                            f"nivel_{nivel}"
+                        )
                     )
                 )
 
@@ -305,19 +339,180 @@ def renderizar_contexto_processo():
             return caminho
 
         # ==================================================
-        # 1. ORIGEM DA VARIÁVEL PRINCIPAL
+        # 1. LOCALIZAÇÃO DA VARIÁVEL PRINCIPAL
         # ==================================================
 
-        caminho_variavel = navegar_hierarquia(
-            titulo="🎯 Origem da variável principal",
-            prefixo_key="origem_variavel_estudo"
+        modo_localizacao = st.radio(
+            "Como deseja localizar a variável principal?",
+            options=[
+                "Navegar pela estrutura AF",
+                "Pesquisar pelo nome da tag",
+            ],
+            horizontal=True,
+            key="modo_localizacao_variavel_estudo",
         )
 
-        if not caminho_variavel:
+        variavel_sugerida = None
+        pi_point_sugerido = None
+        origem_pi_direta = False
+
+        if modo_localizacao == "Navegar pela estrutura AF":
+            caminho_variavel = navegar_hierarquia(
+                titulo="🎯 Origem da variável principal",
+                prefixo_key="origem_variavel_estudo"
+            )
+        else:
+            st.markdown("#### 🔎 Pesquisa por tag")
+            raizes_busca = listar_elementos(
+                servidor=servidor_estudo,
+                database=database_estudo,
+                caminho_elementos=[],
+            )
+            if not raizes_busca:
+                st.warning("Não há áreas AF disponíveis para pesquisa.")
+                return None
+            raiz_busca = str(st.selectbox(
+                "Área inicial da pesquisa",
+                options=raizes_busca,
+                key="raiz_busca_tag_estudo",
+                help="Limitar a área torna a busca mais rápida.",
+            ))
+            termo_tag = st.text_input(
+                "Nome ou parte da tag",
+                placeholder="Ex.: TUT-DS2",
+                key="termo_busca_tag_estudo",
+            )
+
+            assinatura_busca = (
+                database_estudo,
+                raiz_busca,
+                termo_tag.strip().upper(),
+            )
+            if st.session_state.get("assinatura_busca_tag_estudo") != assinatura_busca:
+                st.session_state["resultados_busca_tag_estudo"] = []
+
+            if st.button("Pesquisar tag", key="botao_busca_tag_estudo"):
+                if len(termo_tag.strip()) < 2:
+                    st.warning("Informe pelo menos dois caracteres.")
+                else:
+                    with st.spinner("Procurando associações na estrutura AF..."):
+                        resultados_af = buscar_atributos_por_tag(
+                                servidor=servidor_estudo,
+                                database=database_estudo,
+                                termo_busca=termo_tag,
+                                caminho_raiz=[raiz_busca],
+                        )
+                        erro_data_archive = ""
+                        try:
+                            resultados_pi = buscar_pi_points_por_nome(
+                                servidor_pi="ce-srv11",
+                                termo_busca=termo_tag,
+                            )
+                        except Exception as erro:
+                            resultados_pi = []
+                            erro_data_archive = str(erro).splitlines()[0]
+
+                        indice_af = {
+                            str(item.get("pi_point", "")).upper(): item
+                            for item in resultados_af
+                            if item.get("pi_point")
+                        }
+                        resultados_combinados = []
+                        tags_incluidas = set()
+                        for item in resultados_af:
+                            item = dict(item)
+                            item["associado_af"] = True
+                            resultados_combinados.append(item)
+                            if item.get("pi_point"):
+                                tags_incluidas.add(str(item["pi_point"]).upper())
+
+                        for ponto in resultados_pi:
+                            chave = str(ponto["pi_point"]).upper()
+                            if chave in tags_incluidas:
+                                continue
+                            resultados_combinados.append({
+                                "pi_point": ponto["pi_point"],
+                                "servidor_pi": ponto["servidor_pi"],
+                                "atributo": ponto["pi_point"],
+                                "elemento": "",
+                                "caminho_elementos": [],
+                                "caminho_af": "Sem associação AF localizada",
+                                "uom": "",
+                                "associado_af": False,
+                            })
+
+                        st.session_state["resultados_busca_tag_estudo"] = (
+                            resultados_combinados
+                        )
+                        st.session_state["erro_busca_data_archive"] = (
+                            erro_data_archive
+                        )
+                        st.session_state["assinatura_busca_tag_estudo"] = (
+                            assinatura_busca
+                        )
+
+            resultados_tag = st.session_state.get(
+                "resultados_busca_tag_estudo",
+                [],
+            )
+            if not resultados_tag:
+                if st.session_state.get("assinatura_busca_tag_estudo") == assinatura_busca:
+                    st.warning(
+                        "Nenhuma tag ou associação AF foi encontrada nesta área. "
+                        "Confira o nome, tente outra área ou verifique a conexão."
+                    )
+                    erro_busca = st.session_state.get("erro_busca_data_archive", "")
+                    if erro_busca:
+                        st.error(
+                            "A pesquisa direta no Data Archive não foi autorizada "
+                            f"nesta sessão: {erro_busca}"
+                        )
+                else:
+                    st.info(
+                        "Pesquise uma tag para localizar sua associação na estrutura AF."
+                    )
+                return None
+
+            opcoes_tag = list(range(len(resultados_tag)))
+
+            def rotulo_resultado(indice):
+                item = resultados_tag[indice]
+                tag = item.get("pi_point") or "Tag não identificada"
+                return (
+                    f"{tag} — {item['caminho_af']} > {item['atributo']}"
+                )
+
+            indice_resultado = st.selectbox(
+                "Associação encontrada",
+                options=opcoes_tag,
+                format_func=rotulo_resultado,
+                key="resultado_busca_tag_estudo",
+            )
+            resultado_escolhido = resultados_tag[int(indice_resultado)]
+            caminho_variavel = resultado_escolhido["caminho_elementos"]
+            variavel_sugerida = resultado_escolhido["atributo"]
+            pi_point_sugerido = resultado_escolhido.get("pi_point")
+            origem_pi_direta = not resultado_escolhido.get("associado_af", False)
+
+            if origem_pi_direta:
+                st.warning(
+                    f"A tag **{pi_point_sugerido}** existe no Data Archive, mas "
+                    "não foi encontrada uma associação correspondente no AF. "
+                    "O estudo será exploratório e exigirá validação do contexto."
+                )
+            else:
+                st.success(
+                    f"Associação confirmada: **{pi_point_sugerido or 'tag não identificada'}** "
+                    f"→ **{resultado_escolhido['caminho_af']} > {variavel_sugerida}**"
+                )
+
+        if not caminho_variavel and not origem_pi_direta:
             return None
 
-        caminho_variavel_formatado = " > ".join(
-            caminho_variavel
+        caminho_variavel_formatado = (
+            " > ".join(caminho_variavel)
+            if caminho_variavel
+            else "Sem associação AF localizada"
         )
 
         st.success(
@@ -379,6 +574,12 @@ def renderizar_contexto_processo():
 
             "contexto_formatado":
                 caminho_contexto_formatado,
+
+            "variavel_sugerida": variavel_sugerida,
+            "pi_point_sugerido": pi_point_sugerido,
+            "modo_localizacao": modo_localizacao,
+            "origem_pi_direta": origem_pi_direta,
+            "tag_principal": pi_point_sugerido,
         }
 
     except Exception as erro:
@@ -407,29 +608,32 @@ def renderizar_variavel_e_escopo(
     if contexto is None:
         return None
 
-    try:
+    if contexto.get("origem_pi_direta"):
+        atributos_estudo = [contexto["tag_principal"]]
+    else:
+        try:
 
-        atributos_estudo = listar_atributos(
-            servidor=contexto[
-                "servidor"
-            ],
-            database=contexto[
-                "database"
-            ],
-            caminho_elementos=contexto[
-                "caminho"
-            ]
-        )
+            atributos_estudo = listar_atributos(
+                servidor=contexto[
+                    "servidor"
+                ],
+                database=contexto[
+                    "database"
+                ],
+                caminho_elementos=contexto[
+                    "caminho"
+                ]
+            )
 
-    except Exception as erro:
+        except Exception as erro:
 
-        st.error(
-            "Não foi possível consultar "
-            "os atributos do elemento: "
-            f"{erro}"
-        )
+            st.error(
+                "Não foi possível consultar "
+                "os atributos do elemento: "
+                f"{erro}"
+            )
 
-        return None
+            return None
 
     if not atributos_estudo:
 
@@ -448,11 +652,24 @@ def renderizar_variavel_e_escopo(
         "Variável Principal"
     )
 
+    variavel_sugerida = contexto.get("variavel_sugerida")
+    indice_variavel = (
+        atributos_estudo.index(variavel_sugerida)
+        if variavel_sugerida in atributos_estudo
+        else 0
+    )
+
     variavel_principal = st.selectbox(
         "Variável que será o foco do estudo",
         options=atributos_estudo,
+        index=indice_variavel,
         key="variavel_principal_estudo"
     )
+
+    if contexto.get("pi_point_sugerido"):
+        st.caption(
+            f"Tag de origem localizada: {contexto['pi_point_sugerido']}"
+        )
 
     # ======================================================
     # ESCOPO
@@ -627,7 +844,7 @@ def carregar_variaveis_comparacao(
     desnecessárias.
     """
 
-    historicos_comparacao = {}
+    historicos_comparacao: dict[str, pd.DataFrame] = {}
 
     escopo = selecao_estudo.get(
         "escopo",
@@ -938,6 +1155,21 @@ def carregar_variaveis_comparacao(
                     )
                 )
 
+                fonte_historico = resultado_historico.get(
+                    "fonte",
+                    {},
+                )
+                historico_preparado.attrs["contexto_operacional"] = {
+                    "fonte_dados": resultado_historico.get("estrategia", ""),
+                    "servidor_pi": fonte_historico.get("servidor_pi"),
+                    "pi_point": fonte_historico.get("pi_point"),
+                    "data_reference": fonte_historico.get("data_reference"),
+                    "database_af": contexto["database"],
+                    "caminho_af": " > ".join(caminho_elemento),
+                    "elemento_af": nome_elemento,
+                    "atributo_af": nome_atributo,
+                }
+
                 tempo_atributo = (
                     time.perf_counter()
                     - inicio_atributo
@@ -1023,10 +1255,17 @@ def carregar_variaveis_comparacao(
         == "Somente o elemento selecionado"
     ):
 
+        caminho_comparacao = (
+            contexto.get("caminho_contexto", [])
+            if contexto.get("origem_pi_direta")
+            else contexto["caminho"]
+        )
         carregar_elemento(
-            caminho_elemento=contexto["caminho"],
+            caminho_elemento=caminho_comparacao,
             prefixo_variavel=None,
-            ignorar_variavel_principal=True
+            ignorar_variavel_principal=(
+                not contexto.get("origem_pi_direta", False)
+            )
         )
 
         tempo_total = (
@@ -1267,19 +1506,24 @@ def carregar_variaveis_comparacao(
 # BASE DE CONHECIMENTO DOCUMENTAL
 # ==========================================================
 
+@st.cache_data(show_spinner=False)
+def carregar_base_documental_cache(assinatura_documentos):
+    """
+    Carrega a base documental unificada.
+
+    A assinatura invalida o cache quando algum PDF da pasta
+    Documentos for adicionado, removido ou alterado.
+    """
+    return carregar_base_documental("Documentos")
+
+
 def renderizar_base_conhecimento():
     """
-    Permite carregar um manual técnico em PDF e mantê-lo
-    processado na sessão do Streamlit.
+    Carrega automaticamente os PDFs da pasta Documentos e permite
+    selecionar quais documentos participarão da investigação.
 
-    Nesta fase da POC:
-    - o documento é carregado localmente;
-    - o texto é dividido em trechos pesquisáveis;
-    - os trechos ficam em session_state;
-    - o motor de processo não depende do caminho físico do PDF.
-
-    Futuramente a mesma camada poderá receber documentos
-    vindos de SharePoint, planilhas e outras fontes.
+    A biblioteca completa permanece indexada, mas somente os trechos
+    dos documentos selecionados ficam ativos para busca contextual.
     """
 
     st.divider()
@@ -1289,180 +1533,307 @@ def renderizar_base_conhecimento():
     )
 
     st.caption(
-        "Carregue um manual técnico para complementar a investigação "
-        "com referências documentais. O documento não substitui os "
-        "dados do PI nem as evidências calculadas pelo motor."
+        "Os documentos técnicos da pasta **Documentos** formam a biblioteca "
+        "local. Selecione abaixo quais arquivos deverão participar desta "
+        "investigação."
     )
 
-    arquivo_manual = st.file_uploader(
-        "Manual ou documento técnico (PDF)",
-        type=["pdf"],
-        key="arquivo_base_conhecimento_ete",
-        help=(
-            "Para a POC, utilize o MO-ETE-001. "
-            "A arquitetura foi preparada para outras fontes no futuro."
-        ),
-    )
+    pasta_documentos = Path("Documentos")
 
-    # ------------------------------------------------------
-    # NENHUM NOVO ARQUIVO SELECIONADO
-    # ------------------------------------------------------
+    if not pasta_documentos.exists():
 
-    if arquivo_manual is None:
-
-        documento_atual = st.session_state.get(
-            "documento_base_conhecimento_ete"
+        st.warning(
+            "A pasta **Documentos** não foi encontrada. "
+            "A investigação continuará funcionando somente com "
+            "as evidências calculadas a partir dos dados do processo."
         )
 
-        trechos_atuais = st.session_state.get(
-            "trechos_base_conhecimento_ete",
-            []
-        )
-
-        if documento_atual and trechos_atuais:
-
-            nome_documento = documento_atual.get(
-                "nome",
-                "Documento técnico"
-            )
-
-            st.success(
-                f"✅ Base documental ativa: **{nome_documento}** — "
-                f"{len(trechos_atuais)} trechos disponíveis."
-            )
-
-        else:
-
-            st.info(
-                "Nenhum documento técnico foi carregado nesta sessão. "
-                "A investigação continuará funcionando somente com as "
-                "evidências calculadas a partir dos dados do processo."
-            )
+        st.session_state["base_documental_ete"] = None
+        st.session_state["trechos_base_conhecimento_ete"] = []
 
         return
 
-    # ------------------------------------------------------
-    # IDENTIFICA O CONTEÚDO DO ARQUIVO
-    # ------------------------------------------------------
-
-    conteudo_pdf = arquivo_manual.getvalue()
-
-    hash_documento = hashlib.sha256(
-        conteudo_pdf
-    ).hexdigest()
-
-    hash_atual = st.session_state.get(
-        "hash_base_conhecimento_ete"
+    arquivos_pdf = sorted(
+        pasta_documentos.glob("*.pdf"),
+        key=lambda caminho: caminho.name.lower()
     )
 
-    trechos_atuais = st.session_state.get(
-        "trechos_base_conhecimento_ete",
-        []
-    )
+    if not arquivos_pdf:
 
-    # Evita reprocessar o mesmo PDF a cada rerun do Streamlit.
-    if hash_atual == hash_documento and trechos_atuais:
-
-        st.success(
-            f"✅ **{arquivo_manual.name}** já está indexado nesta sessão — "
-            f"{len(trechos_atuais)} trechos disponíveis."
+        st.info(
+            "Nenhum PDF foi encontrado na pasta **Documentos**."
         )
+
+        st.session_state["base_documental_ete"] = None
+        st.session_state["trechos_base_conhecimento_ete"] = []
 
         return
 
-    caminho_temporario = None
+    assinatura_documentos = tuple(
+        (
+            arquivo.name,
+            arquivo.stat().st_size,
+            arquivo.stat().st_mtime_ns,
+        )
+        for arquivo in arquivos_pdf
+    )
 
     try:
 
         with st.spinner(
-            "Lendo e indexando o documento técnico..."
+            "Preparando a biblioteca documental de engenharia..."
         ):
 
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=".pdf"
-            ) as arquivo_temporario:
-
-                arquivo_temporario.write(
-                    conteudo_pdf
-                )
-
-                caminho_temporario = Path(
-                    arquivo_temporario.name
-                )
-
-            trechos = criar_trechos_pdf(
-                caminho_temporario
+            base_completa = carregar_base_documental_cache(
+                assinatura_documentos
             )
 
-        if not trechos:
+        resumo_bruto: Any = obter_resumo_base_documental(
+            base_completa
+        )
+
+        resumo_completo: dict[str, Any] = {}
+
+        if isinstance(resumo_bruto, dict):
+            resumo_completo = cast(
+                dict[str, Any],
+                resumo_bruto,
+            )
+
+        documentos_resumo_bruto: Any = resumo_completo.get(
+            "documentos",
+            [],
+        )
+
+        documentos_resumo: list[dict[str, Any]] = []
+
+        if isinstance(documentos_resumo_bruto, list):
+            for item_documento in documentos_resumo_bruto:
+                if isinstance(item_documento, dict):
+                    documentos_resumo.append(
+                        cast(
+                            dict[str, Any],
+                            item_documento,
+                        )
+                    )
+
+        documentos_disponiveis: list[str] = []
+
+        for documento in documentos_resumo:
+            nome_documento = documento.get(
+                "documento"
+            )
+
+            if (
+                documento.get("status") == "OK"
+                and isinstance(nome_documento, str)
+                and nome_documento
+            ):
+                documentos_disponiveis.append(
+                    nome_documento
+                )
+
+        if not documentos_disponiveis:
 
             st.warning(
-                "O PDF foi recebido, mas nenhum texto pesquisável "
-                "foi extraído."
+                "Nenhum documento válido ficou disponível para seleção."
             )
+
+            st.session_state["base_documental_ete"] = None
+            st.session_state["trechos_base_conhecimento_ete"] = []
 
             return
 
-        documento = {
-            "nome": arquivo_manual.name,
-            "tipo": "PDF",
-            "origem": "LOCAL",
-            "hash_sha256": hash_documento,
-            "total_trechos": len(trechos),
+        # --------------------------------------------------
+        # SELEÇÃO DOS DOCUMENTOS DA INVESTIGAÇÃO
+        # --------------------------------------------------
+
+        padrao = []
+
+        if "MO-ETE-001.pdf" in documentos_disponiveis:
+            padrao = ["MO-ETE-001.pdf"]
+        else:
+            padrao = [documentos_disponiveis[0]]
+
+        documentos_selecionados = st.multiselect(
+            "Documentos ativos nesta investigação",
+            options=documentos_disponiveis,
+            default=padrao,
+            key="documentos_ativos_base_conhecimento_ete",
+            help=(
+                "Somente os documentos selecionados participarão "
+                "da busca documental desta investigação."
+            ),
+        )
+
+        col_todos, col_limpar = st.columns(2)
+
+        with col_todos:
+
+            if st.button(
+                "☑ Selecionar todos",
+                key="selecionar_todos_documentos_ete"
+            ):
+                st.session_state[
+                    "documentos_ativos_base_conhecimento_ete"
+                ] = documentos_disponiveis
+                st.rerun()
+
+        with col_limpar:
+
+            if st.button(
+                "⬜ Limpar seleção",
+                key="limpar_documentos_ete"
+            ):
+                st.session_state[
+                    "documentos_ativos_base_conhecimento_ete"
+                ] = []
+                st.rerun()
+
+        if not documentos_selecionados:
+
+            st.info(
+                "Nenhum documento está ativo nesta investigação. "
+                "A análise seguirá apenas com as evidências calculadas "
+                "a partir dos dados do processo."
+            )
+
+            st.session_state["base_documental_ete"] = {
+                **base_completa,
+                "trechos": [],
+                "total_trechos": 0,
+                "documentos_processados": [],
+                "documentos_selecionados": [],
+            }
+
+            st.session_state[
+                "trechos_base_conhecimento_ete"
+            ] = []
+
+            st.session_state[
+                "documento_base_conhecimento_ete"
+            ] = {
+                "nome": "Base documental sem seleção",
+                "tipo": "MULTIDOCUMENTO",
+                "origem": "LOCAL",
+                "total_documentos": 0,
+                "total_trechos": 0,
+            }
+
+            return
+
+        # --------------------------------------------------
+        # FILTRA A BASE COMPLETA PARA OS DOCUMENTOS ESCOLHIDOS
+        # --------------------------------------------------
+
+        selecionados_set = set(
+            documentos_selecionados
+        )
+
+        trechos_ativos = [
+            trecho
+            for trecho in base_completa.get(
+                "trechos",
+                []
+            )
+            if trecho.get("documento") in selecionados_set
+        ]
+
+        documentos_ativos: list[dict[str, Any]] = [
+            documento
+            for documento in documentos_resumo
+            if documento.get("documento") in selecionados_set
+        ]
+
+        base_ativa = {
+            **base_completa,
+            "trechos": trechos_ativos,
+            "total_documentos": len(
+                documentos_ativos
+            ),
+            "documentos_processados": documentos_ativos,
+            "total_trechos": len(
+                trechos_ativos
+            ),
+            "documentos_selecionados": list(
+                documentos_selecionados
+            ),
         }
 
         st.session_state[
-            "documento_base_conhecimento_ete"
-        ] = documento
+            "base_documental_ete"
+        ] = base_ativa
 
         st.session_state[
             "trechos_base_conhecimento_ete"
-        ] = trechos
+        ] = trechos_ativos
 
         st.session_state[
-            "hash_base_conhecimento_ete"
-        ] = hash_documento
-
-        # Uma nova base documental muda o contexto disponível para a IA.
-        st.session_state[
-            "resultado_ia_estudo_processo"
-        ] = None
+            "documento_base_conhecimento_ete"
+        ] = {
+            "nome": "Base documental selecionada",
+            "tipo": "MULTIDOCUMENTO",
+            "origem": "LOCAL",
+            "documentos": list(
+                documentos_selecionados
+            ),
+            "total_documentos": len(
+                documentos_ativos
+            ),
+            "total_trechos": len(
+                trechos_ativos
+            ),
+        }
 
         st.success(
-            f"✅ **{arquivo_manual.name}** indexado com sucesso — "
-            f"{len(trechos)} trechos pesquisáveis."
+            f"✅ Base ativa para esta investigação: "
+            f"**{len(documentos_ativos)} documento(s)** — "
+            f"**{len(trechos_ativos)} trechos** pesquisáveis."
         )
 
+        with st.expander(
+            "📄 Documentos ativos"
+        ):
+
+            for documento in documentos_ativos:
+
+                nome = documento.get(
+                    "documento",
+                    "Documento"
+                )
+
+                total = documento.get(
+                    "total_trechos",
+                    0
+                )
+
+                st.write(
+                    f"✅ **{nome}** — "
+                    f"{total} trechos"
+                )
+
         st.caption(
-            "O documento foi processado localmente e seus trechos "
-            "ficaram disponíveis para a investigação desta sessão."
+            "A MAR.IA não recebe os PDFs completos. "
+            "A busca documental usa somente os documentos selecionados "
+            "e recupera apenas os trechos mais relacionados ao caso."
         )
 
     except Exception as erro:
 
         st.error(
-            "Não foi possível processar o documento técnico: "
+            "Não foi possível preparar a base documental: "
             f"{erro}"
         )
 
-    finally:
-
-        if caminho_temporario is not None:
-
-            try:
-                caminho_temporario.unlink(
-                    missing_ok=True
-                )
-            except Exception:
-                pass
+        st.session_state["base_documental_ete"] = None
+        st.session_state["trechos_base_conhecimento_ete"] = []
 
 
 # ==========================================================
 # INTERPRETAÇÃO COM IA
 # ==========================================================
 
-def renderizar_interpretacao_ia():
+def renderizar_interpretacao_ia(auto_executar=False):
     """
     Renderiza a camada de IA usando o contexto determinístico
     salvo na sessão.
@@ -1490,57 +1861,99 @@ def renderizar_interpretacao_ia():
         "confirma causa raiz e não executa alterações no processo."
     )
 
+    status_maria = verificar_maria()
     status_ollama = verificar_ollama()
+    provedores = []
+    if status_maria.get("disponivel"):
+        provedores.append("MAR.IA (corporativa)")
+    if status_ollama.get("disponivel") and status_ollama.get("modelos"):
+        provedores.append("Ollama (local)")
 
-    if not status_ollama.get("disponivel"):
-
-        st.warning(
-            "O serviço local do Ollama não está acessível "
-            "neste momento."
-        )
-
-        erro_ollama = status_ollama.get("erro")
-
-        if erro_ollama:
-            st.caption(
-                f"Detalhe técnico: {erro_ollama}"
-            )
-
+    if not provedores:
+        st.warning("Nenhum provedor de IA está disponível neste momento.")
+        if status_maria.get("ausentes"):
+            st.caption("Configuração da MAR.IA ainda não carregada nesta sessão.")
         return
 
-    modelos = status_ollama.get(
-        "modelos",
-        []
+    provedor_tela = st.radio(
+        "Provedor da interpretação",
+        options=provedores,
+        horizontal=True,
+        key="provedor_ia_estudo_processo",
     )
-
-    if not modelos:
-
-        st.warning(
-            "O Ollama está acessível, mas nenhum modelo "
-            "local foi encontrado."
-        )
-
-        return
 
     modelo_padrao = "llama3.2:3b"
 
-    indice_modelo = (
-        modelos.index(modelo_padrao)
-        if modelo_padrao in modelos
-        else 0
-    )
+    modelo_ia = None
+    token_maria = ""
 
-    modelo_ia = st.selectbox(
-        "Modelo local",
-        options=modelos,
-        index=indice_modelo,
-        key="modelo_ia_estudo_processo"
-    )
+    if provedor_tela.startswith("MAR.IA"):
+        cache = st.session_state.get("maria_cache_autenticacao", "")
+        silencioso = obter_token_maria_silencioso(cache)
+        if silencioso.get("cache"):
+            st.session_state["maria_cache_autenticacao"] = silencioso["cache"]
+        token_maria = silencioso.get("token", "")
 
-    if st.button(
+        if not token_maria:
+            fluxo_atual = st.session_state.get("maria_fluxo_login")
+            if not fluxo_atual and st.button("🔐 Entrar com a Microsoft"):
+                inicio = iniciar_login_maria(cache)
+                if inicio.get("ok"):
+                    st.session_state["maria_fluxo_login"] = inicio["fluxo"]
+                    st.session_state["maria_cache_autenticacao"] = inicio["cache"]
+                    st.rerun()
+                else:
+                    st.error(f"Não foi possível iniciar o login: {inicio.get('erro')}")
+
+            fluxo_atual = st.session_state.get("maria_fluxo_login")
+            if fluxo_atual:
+                st.info("Abra o endereço abaixo, informe o código e conclua o login.")
+                st.link_button(
+                    "Abrir login da Microsoft",
+                    fluxo_atual.get("verification_uri", "https://microsoft.com/devicelogin"),
+                )
+                st.code(fluxo_atual.get("user_code", ""), language=None)
+                st.caption("Não compartilhe este código temporário.")
+                if st.button("✅ Já concluí o login"):
+                    conclusao = concluir_login_maria(
+                        fluxo_atual,
+                        st.session_state.get("maria_cache_autenticacao", ""),
+                    )
+                    if conclusao.get("ok"):
+                        st.session_state["maria_cache_autenticacao"] = conclusao["cache"]
+                        st.session_state.pop("maria_fluxo_login", None)
+                        st.success("Conexão autenticada com a MAR.IA estabelecida.")
+                        st.rerun()
+                    else:
+                        st.error(f"Login não concluído: {conclusao.get('erro')}")
+        else:
+            st.success("Conectado à MAR.IA com sua conta Microsoft.")
+    else:
+        modelos = status_ollama.get("modelos", [])
+        indice_modelo = modelos.index(modelo_padrao) if modelo_padrao in modelos else 0
+        modelo_ia = st.selectbox(
+            "Modelo local",
+            options=modelos,
+            index=indice_modelo,
+            key="modelo_ia_estudo_processo",
+        )
+
+    pode_interpretar = bool(token_maria) if provedor_tela.startswith("MAR.IA") else True
+
+    clique_interpretar = st.button(
         "🤖 Interpretar investigação com IA",
-        key="interpretar_investigacao_ia"
-    ):
+        key="interpretar_investigacao_ia",
+        disabled=not pode_interpretar,
+    )
+
+    assinatura_auto = repr(contexto_ia)
+    executar_auto = bool(
+        auto_executar
+        and pode_interpretar
+        and st.session_state.get("assinatura_ia_automatica") != assinatura_auto
+    )
+
+    if clique_interpretar or executar_auto:
 
         with st.spinner(
             "Interpretando as evidências de engenharia..."
@@ -1548,13 +1961,16 @@ def renderizar_interpretacao_ia():
 
             resultado_ia = consultar_ia(
                 contexto_ia=contexto_ia,
-                provedor="OLLAMA",
+                provedor="MAR.IA" if provedor_tela.startswith("MAR.IA") else "OLLAMA",
                 modelo=modelo_ia,
+                token=token_maria or None,
             )
 
         st.session_state[
             "resultado_ia_estudo_processo"
         ] = resultado_ia
+        if executar_auto:
+            st.session_state["assinatura_ia_automatica"] = assinatura_auto
 
     resultado_ia = st.session_state.get(
         "resultado_ia_estudo_processo"
@@ -1583,8 +1999,7 @@ def renderizar_interpretacao_ia():
         return
 
     st.success(
-        f"Interpretação gerada localmente com "
-        f"**{resultado_ia.get('modelo', modelo_ia)}**."
+        f"Interpretação gerada com **{resultado_ia.get('modelo', modelo_ia)}**."
     )
 
     st.markdown(
@@ -1609,7 +2024,8 @@ def renderizar_interpretacao_ia():
 def executar_estudo_processo(
     contexto,
     selecao_estudo,
-    dados_estudo
+    dados_estudo,
+    objetivo_estudo
 ):
     """
     Executa o estudo de processo:
@@ -1652,8 +2068,28 @@ def executar_estudo_processo(
             "Consultando variável principal no PI..."
         ):
 
-            resultado_principal = (
-                carregar_historico_inteligente(
+            if contexto.get("origem_pi_direta"):
+                dados_diretos = carregar_historico_pi_point(
+                    servidor_pi="ce-srv11",
+                    nome_pi_point=contexto["tag_principal"],
+                    inicio=dados_estudo["inicio"],
+                    fim=dados_estudo["fim"],
+                )
+                resultado_principal = {
+                    "dados": dados_diretos,
+                    "fonte": {
+                        "servidor_pi": "ce-srv11",
+                        "pi_point": contexto["tag_principal"],
+                        "data_reference": "PI Point",
+                    },
+                    "estrategia": "PI_DATA_ARCHIVE_DIRETO_SEM_AF",
+                    "status": "OK",
+                    "detalhe": (
+                        "Histórico consultado diretamente; associação AF não confirmada."
+                    ),
+                }
+            else:
+                resultado_principal = carregar_historico_inteligente(
                     servidor=contexto[
                         "servidor"
                     ],
@@ -1671,7 +2107,6 @@ def executar_estudo_processo(
                         "fim"
                     ]
                 )
-            )
 
             historico_principal_bruto = resultado_principal[
                 "dados"
@@ -1681,6 +2116,32 @@ def executar_estudo_processo(
                 preparar_historico_seguro(
                     historico_principal_bruto
                 )
+            )
+
+            fonte_principal = resultado_principal.get(
+                "fonte",
+                {},
+            )
+            metadados_principal = {
+                "fonte_dados": resultado_principal.get("estrategia", ""),
+                "servidor_pi": fonte_principal.get("servidor_pi"),
+                "pi_point": fonte_principal.get("pi_point"),
+                "data_reference": fonte_principal.get("data_reference"),
+                "database_af": contexto["database"],
+                "caminho_af": (
+                    " > ".join(contexto["caminho"])
+                    if contexto["caminho"]
+                    else ""
+                ),
+                "elemento_af": (
+                    contexto["caminho"][-1]
+                    if contexto["caminho"]
+                    else ""
+                ),
+                "atributo_af": variavel_principal,
+            }
+            historico_principal.attrs["contexto_operacional"] = (
+                metadados_principal
             )
 
         if historico_principal.empty:
@@ -1889,12 +2350,122 @@ def executar_estudo_processo(
         )
 
         if not historicos_comparacao:
-
             st.warning(
-                "Nenhuma outra variável com histórico "
-                "numérico válido foi encontrada."
+                "Não foram encontradas variáveis de comparação suficientes. "
+                "O estudo continuará no modo assistido, sem inventar correlações."
             )
 
+            valores_alvo = pd.to_numeric(
+                historico_principal["valor_numerico"],
+                errors="coerce",
+            ).dropna()
+            resumo_alvo = {
+                "primeiro_valor": round(float(valores_alvo.iloc[0]), 3),
+                "ultimo_valor": round(float(valores_alvo.iloc[-1]), 3),
+                "minimo": round(float(valores_alvo.min()), 3),
+                "maximo": round(float(valores_alvo.max()), 3),
+                "media": round(float(valores_alvo.mean()), 3),
+                "desvio_padrao": round(float(valores_alvo.std()), 3),
+                "registros_validos": int(len(valores_alvo)),
+            }
+
+            resolucao = contexto.get("resolucao_automatica", {})
+            contexto_fisico = {
+                "rota": resolucao.get("rota"),
+                "origens_elegiveis": resolucao.get("origens_elegiveis", []),
+                "decantadores_elegiveis": resolucao.get(
+                    "decantadores_elegiveis",
+                    [],
+                ),
+                "destino": resolucao.get("destino"),
+                "origem": resolucao.get("origem_contexto"),
+            }
+
+            base_documental = st.session_state.get("base_documental_ete")
+            if not isinstance(base_documental, dict) or not base_documental.get("trechos"):
+                base_documental = carregar_base_documental("Documentos")
+            if not base_documental.get("trechos") and Path("Manual_Oper_EEF.pdf").exists():
+                base_documental = carregar_base_documental(".")
+
+            termo_indicador = "turbidez"
+            trechos_base = base_documental.get("trechos", []) if base_documental else []
+            manual_cobre_indicador = any(
+                termo_indicador in str(trecho.get("texto", "")).lower()
+                for trecho in trechos_base
+            )
+            conhecimento_documental = []
+            if manual_cobre_indicador:
+                resultados_documentais = buscar_base_documental(
+                    base_documental,
+                    "turbidez ETF-2 decantação sólidos saída tratamento",
+                    limite=5,
+                )
+                conhecimento_documental = [
+                    {
+                        "documento": item.get("documento", "Documento técnico"),
+                        "pagina": item.get("pagina"),
+                        "texto": item.get("texto", ""),
+                    }
+                    for item in resultados_documentais
+                ]
+
+            consideracoes_dados = [
+                "A tag TUT-DS2 possui histórico, mas não tem associação AF confirmada.",
+                "Não foram localizadas variáveis candidatas com histórico no contexto consultado.",
+                "Não há evidência de correlação ou defasagem disponível nesta execução.",
+            ]
+            lacunas_documentais = []
+            if not manual_cobre_indicador:
+                lacunas_documentais.append(
+                    "A documentação pesquisável não apresentou referência explícita à turbidez."
+                )
+
+            st.divider()
+            st.markdown("## 🗂️ Considerações sobre os dados")
+            for item in consideracoes_dados:
+                st.write(f"- {item}")
+
+            st.markdown("## 🏭 Contexto de processo disponível")
+            st.write(
+                f"A topologia cadastrada associa **{variavel_principal}** a "
+                f"**{contexto_fisico.get('destino') or 'destino não confirmado'}**, "
+                f"com rota de investigação envolvendo "
+                f"**{', '.join(contexto_fisico.get('origens_elegiveis', [])) or 'origens não confirmadas'}** "
+                "e o grupo **DS-7 a DS-12**. Isso define onde investigar, "
+                "mas não comprova a causa da piora."
+            )
+
+            st.markdown("## 📚 Considerações sobre a documentação")
+            if lacunas_documentais:
+                st.warning(
+                    "O manual não apresentou conteúdo explícito sobre turbidez. "
+                    "Recomenda-se documentar o indicador, seus limites, fatores de "
+                    "influência, instrumentos associados e resposta operacional esperada."
+                )
+            else:
+                st.success(
+                    "Foram encontrados trechos documentais relacionados à turbidez "
+                    "para apoiar a interpretação."
+                )
+
+            novo_contexto_ia = {
+                "modo_assistido_sem_correlacao": True,
+                "objetivo_estudo": str(objetivo_estudo or "").strip(),
+                "variavel_principal": variavel_principal,
+                "cobertura_principal_pct": cobertura_pct,
+                "registros_principal": len(historico_principal),
+                "resumo_variavel_alvo": resumo_alvo,
+                "contexto_fisico_conhecido": contexto_fisico,
+                "consideracoes_dados": consideracoes_dados,
+                "lacunas_documentais": lacunas_documentais,
+                "conhecimento_documental": conhecimento_documental,
+            }
+            if st.session_state.get("contexto_ia_estudo_processo") != novo_contexto_ia:
+                st.session_state["resultado_ia_estudo_processo"] = None
+                st.session_state.pop("assinatura_ia_automatica", None)
+            st.session_state["contexto_ia_estudo_processo"] = novo_contexto_ia
+            st.session_state["modo_ia_assistido_automatico"] = True
+            renderizar_interpretacao_ia(auto_executar=True)
             return
 
         st.success(
@@ -1922,6 +2493,77 @@ def executar_estudo_processo(
                         variavel_principal
                 )
             )
+
+        exclusoes_topologicas = ranking_correlacoes.attrs.get(
+            "exclusoes_topologicas",
+            [],
+        )
+
+        avaliacao_dados_principal = avaliar_contexto_dados(
+            variavel_principal,
+            historico_principal.attrs.get("contexto_operacional"),
+        )
+
+        st.markdown("### 🗂️ Considerações sobre os dados")
+        st.caption(
+            "Identificação, origem e rastreabilidade do sinal. "
+            "Esta avaliação é independente da interpretação do processo."
+        )
+        col_fonte, col_rota = st.columns(2)
+        col_fonte.metric(
+            "Ponto Data Archive/SMT",
+            avaliacao_dados_principal["pi_point"],
+        )
+        col_rota.metric(
+            "Rota identificada",
+            avaliacao_dados_principal["rota_identificada"],
+        )
+        st.write(
+            f"**Contexto AF:** {avaliacao_dados_principal['caminho_af']}"
+        )
+        if avaliacao_dados_principal["observacoes_dados"]:
+            for observacao in avaliacao_dados_principal["observacoes_dados"]:
+                st.warning(observacao)
+        else:
+            st.success(
+                "A identidade do dado foi confirmada pelo ponto de origem e "
+                "pelo contexto da estrutura AF."
+            )
+
+        st.markdown("### 🏭 Considerações sobre o processo")
+        rota_principal = identificar_rota(
+            variavel_principal,
+            historico_principal.attrs.get("contexto_operacional"),
+        )
+        if rota_principal:
+            st.info(
+                f"A variável principal foi associada a **{rota_principal}**. "
+                "Essa rota será usada como critério de elegibilidade antes "
+                "das correlações."
+            )
+        else:
+            st.warning(
+                "A rota do processo não foi confirmada. As relações serão "
+                "mantidas como exploratórias e deverão ser validadas pela engenharia."
+            )
+
+        if exclusoes_topologicas:
+            st.info(
+                f"🧭 A topologia física excluiu "
+                f"{len(exclusoes_topologicas)} variável(is) antes da "
+                "correlação por incompatibilidade ou ambiguidade de rota."
+            )
+            with st.expander("Ver exclusões pela rota física"):
+                st.dataframe(
+                    pd.DataFrame(exclusoes_topologicas)[[
+                        "variavel",
+                        "rota_candidata",
+                        "rota_alvo",
+                        "motivo_topologia",
+                    ]],
+                    width="stretch",
+                    hide_index=True,
+                )
 
         if ranking_correlacoes.empty:
 
@@ -2033,6 +2675,8 @@ def executar_estudo_processo(
                 "tipo_variavel",
                 "categoria_engenharia",
                 "tipo_relacao",
+                "elegibilidade_fisica",
+                "rota_candidata",
                 "correlacao",
                 "direcao",
                 "classificacao",
@@ -2693,6 +3337,21 @@ def executar_estudo_processo(
                     hide_index=True
                 )
 
+                with st.expander(
+                    "📘 Como interpretar estes indicadores?"
+                ):
+
+                    st.markdown(
+                        """
+- **`correlacao_sem_defasagem`** — associação linear entre a variável candidata e a variável principal quando ambas são comparadas no mesmo instante.
+- **`melhor_correlacao`** — maior associação encontrada após testar os deslocamentos temporais definidos pela análise.
+- **`defasagem`** — deslocamento temporal correspondente à melhor correlação. Indica antecedência ou sucessão entre as séries, mas **não representa automaticamente TDH, tempo de transporte ou tempo de processo**.
+- **`pontos_validos`** — quantidade de pares de observações efetivamente utilizados no cálculo para a defasagem selecionada.
+- **`ganho_abs_correlacao`** — aumento da correlação em valor absoluto ao considerar a melhor defasagem, em comparação com a correlação sem defasagem.
+- **`score_evidencia_temporal`** — índice determinístico de força e prioridade da evidência temporal para investigação. **Não é probabilidade de causalidade**.
+                        """
+                    )
+
                 # Para investigação antecipatória, somente
                 # relações em que a variável candidata antecede
                 # a principal podem ser destacadas.
@@ -2878,6 +3537,71 @@ def executar_estudo_processo(
                             f"/100 — "
                             f"{classificacao_oficial}"
                         )
+                    )
+
+                    score_destaque = int(
+                        destaque_temporal[
+                            "score_evidencia_temporal"
+                        ]
+                    )
+
+                    st.markdown(
+                        "### 🧾 Tradução da evidência principal"
+                    )
+
+                    traducao_evidencia = (
+                        f"**{nome_destaque}** apresentou sua maior "
+                        f"associação com **{variavel_principal}** "
+                        f"quando considerada uma antecedência temporal "
+                        f"de **{defasagem_destaque.replace('+', '')}**. "
+                    )
+
+                    if (
+                        correlacao_base_destaque is not None
+                        and not pd.isna(
+                            correlacao_base_destaque
+                        )
+                    ):
+
+                        traducao_evidencia += (
+                            f"A correlação sem defasagem foi de "
+                            f"**{float(correlacao_base_destaque):.3f}** "
+                            f"e a melhor correlação foi de "
+                            f"**{melhor_corr_destaque:.3f}**"
+                        )
+
+                        if (
+                            ganho_destaque is not None
+                            and not pd.isna(
+                                ganho_destaque
+                            )
+                        ):
+
+                            traducao_evidencia += (
+                                f", com ganho absoluto de "
+                                f"**{float(ganho_destaque):.3f}**"
+                            )
+
+                        traducao_evidencia += ". "
+
+                    else:
+
+                        traducao_evidencia += (
+                            f"A melhor correlação encontrada foi de "
+                            f"**{melhor_corr_destaque:.3f}**. "
+                        )
+
+                    traducao_evidencia += (
+                        f"O resultado foi baseado em "
+                        f"**{pontos_destaque} pares válidos** e recebeu "
+                        f"score **{score_destaque}/100 — "
+                        f"{classificacao_oficial}**. Esse conjunto indica "
+                        f"prioridade para investigação, sem comprovar "
+                        f"causalidade."
+                    )
+
+                    st.write(
+                        traducao_evidencia
                     )
 
                 st.caption(
@@ -3097,18 +3821,16 @@ def executar_estudo_processo(
 
                     conhecimento_documental = []
 
-                    trechos_conhecimento = st.session_state.get(
-                        "trechos_base_conhecimento_ete",
-                        []
-                    )
-
-                    documento_conhecimento = st.session_state.get(
-                        "documento_base_conhecimento_ete"
+                    base_documental = st.session_state.get(
+                        "base_documental_ete"
                     )
 
                     consulta_documental = None
 
-                    if trechos_conhecimento:
+                    if (
+                        isinstance(base_documental, dict)
+                        and base_documental.get("trechos")
+                    ):
 
                         termos_consulta = [
                             str(variavel_principal)
@@ -3127,8 +3849,8 @@ def executar_estudo_processo(
                                     str(variavel_hipotese)
                                 )
 
-                        # Termos físicos complementares ajudam a busca
-                        # documental do POC sem alterar a análise estatística.
+                        # Termos físicos complementares ajudam a localizar
+                        # referências úteis sem alterar a evidência estatística.
                         termos_consulta.extend([
                             "oxigênio dissolvido",
                             "tanque de aeração",
@@ -3141,8 +3863,8 @@ def executar_estudo_processo(
                             termos_consulta
                         )
 
-                        resultados_documentais = buscar_trechos(
-                            trechos=trechos_conhecimento,
+                        resultados_documentais = buscar_base_documental(
+                            base_documental=base_documental,
                             consulta=consulta_documental,
                             limite=5,
                         )
@@ -3150,47 +3872,32 @@ def executar_estudo_processo(
                         for resultado in resultados_documentais:
 
                             conhecimento_documental.append({
-                                "documento": (
-                                    documento_conhecimento.get(
-                                        "nome",
+                                "documento": resultado.get(
+                                    "documento",
+                                    resultado.get(
+                                        "nome_arquivo",
                                         "Documento técnico"
                                     )
-                                    if isinstance(
-                                        documento_conhecimento,
-                                        dict
-                                    )
-                                    else str(
-                                        documento_conhecimento
-                                        or "Documento técnico"
-                                    )
                                 ),
-                                "tipo": (
-                                    documento_conhecimento.get(
-                                        "tipo",
-                                        "PDF"
-                                    )
-                                    if isinstance(
-                                        documento_conhecimento,
-                                        dict
-                                    )
-                                    else "PDF"
+                                "tipo": resultado.get(
+                                    "tipo_documento",
+                                    "PDF"
                                 ),
-                                "origem": (
-                                    documento_conhecimento.get(
-                                        "origem",
-                                        "LOCAL"
-                                    )
-                                    if isinstance(
-                                        documento_conhecimento,
-                                        dict
-                                    )
-                                    else "LOCAL"
+                                "origem": resultado.get(
+                                    "origem",
+                                    "LOCAL"
                                 ),
                                 "pagina": resultado.get(
                                     "pagina"
                                 ),
                                 "id_trecho": resultado.get(
                                     "id_trecho"
+                                ),
+                                "id_trecho_documento": resultado.get(
+                                    "id_trecho_documento"
+                                ),
+                                "hash_documento": resultado.get(
+                                    "hash_documento"
                                 ),
                                 "pontuacao_busca": resultado.get(
                                     "pontuacao_busca"
@@ -3316,9 +4023,9 @@ def executar_estudo_processo(
                     else:
 
                         st.caption(
-                            "📚 Nenhuma referência documental foi associada. "
-                            "Carregue um manual na Base de Conhecimento para "
-                            "enriquecer a investigação."
+                            "📚 Nenhuma referência documental relevante foi associada "
+                            "a esta investigação. A base continuará disponível "
+                            "para novas consultas."
                         )
 
                     col_evidencias, col_lacunas = st.columns(
@@ -3402,9 +4109,21 @@ def executar_estudo_processo(
                     # CONTEXTO REAL DISPONÍVEL PARA A CAMADA DE IA
                     # ------------------------------------------
 
-                    novo_contexto_ia = investigacao[
-                        "contexto_ia"
-                    ]
+                    novo_contexto_ia = dict(
+                        investigacao[
+                            "contexto_ia"
+                        ]
+                    )
+
+                    # Inclui a pergunta real do engenheiro no contexto da MAR.IA.
+                    objetivo_estudo_limpo = str(
+                        objetivo_estudo or ""
+                    ).strip()
+
+                    if objetivo_estudo_limpo:
+                        novo_contexto_ia[
+                            "objetivo_estudo"
+                        ] = objetivo_estudo_limpo
 
                     contexto_anterior = st.session_state.get(
                         "contexto_ia_estudo_processo"
@@ -3472,7 +4191,7 @@ def renderizar_estudo_processo():
 
     with col1:
 
-        tipo_estudo = st.selectbox(
+        _tipo_estudo = st.selectbox(
             "Tipo de estudo",
             options=[
                 "Investigação de anomalia",
@@ -3505,18 +4224,325 @@ def renderizar_estudo_processo():
         key="objetivo_estudo_processo"
     )
 
+    try:
+        bases_disponiveis = obter_databases_estudo_cache("CE-SRV11")
+    except Exception as erro:
+        st.error(f"Não foi possível consultar as bases operacionais: {erro}")
+        return
+
+    if not bases_disponiveis:
+        st.warning("Nenhuma base operacional foi encontrada.")
+        return
+
+    indice_base_ete = (
+        bases_disponiveis.index("ETE")
+        if "ETE" in bases_disponiveis
+        else 0
+    )
+    base_operacional = str(st.selectbox(
+        "Base operacional",
+        options=bases_disponiveis,
+        index=indice_base_ete,
+        key="base_operacional_inicio_estudo",
+        help="A base ETE é selecionada automaticamente quando disponível.",
+    ))
+
+    configuracao_avancada = st.checkbox(
+        "Configuração avançada",
+        value=False,
+        key="configuracao_avancada_estudo",
+        help="Use somente quando a MAR.IA não conseguir identificar o alvo automaticamente.",
+    )
+
+    if not configuracao_avancada:
+        assinatura_descoberta = (
+            base_operacional,
+            objetivo_estudo.strip().upper(),
+        )
+        if st.session_state.get("assinatura_descoberta_automatica") != assinatura_descoberta:
+            st.session_state.pop("tags_descobertas_automaticamente", None)
+
+        executar_automaticamente = st.button(
+            "🔬 Executar estudo",
+            type="primary",
+            key="executar_estudo_automatico",
+        )
+
+        resolucao_automatica = None
+        tags_pendentes = st.session_state.get(
+            "tags_descobertas_automaticamente",
+            [],
+        )
+        if tags_pendentes:
+            st.info(
+                "Encontrei mais de uma possibilidade no histórico operacional. "
+                "Confirme qual tag representa a variável do estudo."
+            )
+            opcoes_tags = [str(item["tag_principal"]) for item in tags_pendentes]
+            tag_confirmada = str(st.selectbox(
+                "Tag encontrada",
+                options=opcoes_tags,
+                key="tag_descoberta_confirmada_estudo",
+            ))
+            if st.button(
+                "✅ Confirmar tag e continuar",
+                key="confirmar_tag_descoberta_estudo",
+            ):
+                resolucao_automatica = construir_resolucao_tag(
+                    objetivo_estudo,
+                    tag_confirmada,
+                )
+                if not resolucao_automatica:
+                    st.warning(
+                        "A tag foi localizada, mas sua rota física ainda não pôde "
+                        "ser confirmada. Use a configuração avançada para informar "
+                        "o contexto."
+                    )
+                    return
+                item_confirmado = next(
+                    (
+                        item for item in tags_pendentes
+                        if str(item["tag_principal"]) == tag_confirmada
+                    ),
+                    {},
+                )
+                if item_confirmado.get("associacao_af"):
+                    resolucao_automatica["associacao_af"] = dict(
+                        item_confirmado["associacao_af"]
+                    )
+                if item_confirmado.get("indicador_semantico"):
+                    resolucao_automatica["indicador"] = str(
+                        item_confirmado["indicador_semantico"]
+                    )
+                if item_confirmado.get("estrategia_analitica"):
+                    resolucao_automatica["estrategia_analitica"] = str(
+                        item_confirmado["estrategia_analitica"]
+                    )
+                st.session_state.pop("tags_descobertas_automaticamente", None)
+            elif not executar_automaticamente:
+                return
+
+        if not executar_automaticamente and not resolucao_automatica:
+            st.info(
+                "Descreva o problema e clique em **Executar estudo**. "
+                "A MAR.IA pesquisará as tags existentes, identificará a variável "
+                "e validará a rota física."
+            )
+            renderizar_interpretacao_ia(
+                auto_executar=st.session_state.get(
+                    "modo_ia_assistido_automatico",
+                    False,
+                )
+            )
+            return
+
+        if not objetivo_estudo.strip():
+            st.warning("Descreva o objetivo antes de executar o estudo.")
+            return
+
+        resolucao_automatica = (
+            resolucao_automatica
+            or resolver_objetivo_estudo(objetivo_estudo)
+        )
+        resolucao_catalogo_pendente = None
+        if (
+            resolucao_automatica
+            and resolucao_automatica.get("requer_confirmacao", False)
+        ):
+            # O catálogo reconheceu o conceito e a rota, mas o nome funcional
+            # ainda precisa ser convertido em um PI Point real.
+            resolucao_catalogo_pendente = resolucao_automatica
+            resolucao_automatica = None
+
+        if not resolucao_automatica:
+            termos_busca = (
+                [str(resolucao_catalogo_pendente["tag_principal"]).split()[0]]
+                if resolucao_catalogo_pendente
+                else sugerir_termos_busca_objetivo(objetivo_estudo)
+            )
+            tags_encontradas = []
+            associacoes_af_por_tag = {}
+            erro_descoberta = ""
+            with st.spinner("Pesquisando a variável no histórico operacional..."):
+                for termo_busca in termos_busca:
+                    try:
+                        resultados_af = buscar_atributos_por_tag(
+                            servidor="CE-SRV11",
+                            database=base_operacional,
+                            termo_busca=termo_busca,
+                            caminho_raiz=[],
+                            limite=50,
+                        )
+                        for item_af in resultados_af:
+                            pi_point_af = str(item_af.get("pi_point", "")).strip()
+                            if not pi_point_af:
+                                continue
+                            tags_encontradas.append(pi_point_af)
+                            associacoes_af_por_tag.setdefault(
+                                pi_point_af.upper(),
+                                dict(item_af),
+                            )
+                        resultados_pi = buscar_pi_points_por_nome(
+                            servidor_pi="ce-srv11",
+                            termo_busca=termo_busca,
+                            limite=50,
+                        )
+                        tags_encontradas.extend(
+                            item.get("pi_point", "") for item in resultados_pi
+                        )
+                    except Exception as erro:
+                        erro_descoberta = str(erro).splitlines()[0]
+                        break
+
+            ranking_tags = ranquear_tags_para_objetivo(
+                objetivo_estudo,
+                tags_encontradas,
+            )
+            ranking_tags = [
+                item for item in ranking_tags
+                if item.get("correspondencias", 0) > 0
+            ][:20]
+            for item in ranking_tags:
+                associacao_af = associacoes_af_por_tag.get(
+                    str(item["tag_principal"]).upper()
+                )
+                if associacao_af:
+                    item["associacao_af"] = associacao_af
+                if resolucao_catalogo_pendente:
+                    item["indicador_semantico"] = resolucao_catalogo_pendente[
+                        "indicador"
+                    ]
+                    item["estrategia_analitica"] = resolucao_catalogo_pendente[
+                        "estrategia_analitica"
+                    ]
+            if not ranking_tags:
+                mensagem = (
+                    "Não encontrei uma tag compatível com segurança. Informe o "
+                    "indicador e o equipamento/destino com mais detalhes ou use "
+                    "**Configuração avançada**."
+                )
+                if erro_descoberta:
+                    mensagem += f" A consulta ao histórico respondeu: {erro_descoberta}"
+                st.warning(mensagem)
+                return
+
+            st.session_state["tags_descobertas_automaticamente"] = ranking_tags
+            st.session_state["assinatura_descoberta_automatica"] = assinatura_descoberta
+            st.rerun()
+
+        elementos_raiz = listar_elementos(
+            servidor="CE-SRV11",
+            database=base_operacional,
+            caminho_elementos=[],
+        )
+        elemento_ete = next(
+            (
+                elemento for elemento in elementos_raiz
+                if str(elemento).strip().upper() == "ETE"
+            ),
+            None,
+        )
+        if not elemento_ete:
+            st.warning(
+                "A variável foi identificada, mas o contexto operacional ETE não "
+                "foi localizado automaticamente. Use a configuração avançada."
+            )
+            return
+
+        st.success(
+            f"**Interpretação automática:** {resolucao_automatica['indicador']} → "
+            f"tag **{resolucao_automatica['tag_principal']}** → "
+            f"**{resolucao_automatica['rota']}**."
+        )
+        st.caption(
+            "Candidatos físicos: "
+            + ", ".join(resolucao_automatica["origens_elegiveis"])
+            + " | Decantadores: "
+            + ", ".join(resolucao_automatica["decantadores_elegiveis"])
+        )
+        st.caption(
+            "Estratégia selecionada: "
+            + str(resolucao_automatica.get(
+                "estrategia_analitica",
+                "ANÁLISE EXPLORATÓRIA",
+            )).replace("_", " ")
+            + ". A rota física será validada antes das correlações."
+        )
+
+        associacao_af = resolucao_automatica.get("associacao_af") or {}
+        caminho_origem = list(associacao_af.get("caminho_elementos") or [])
+        nome_atributo_principal = str(
+            associacao_af.get("atributo")
+            or resolucao_automatica["tag_principal"]
+        )
+        contexto_automatico = {
+            "servidor": "CE-SRV11",
+            "database": base_operacional,
+            "caminho": caminho_origem,
+            "caminho_contexto": [str(elemento_ete)],
+            "caminho_formatado": (
+                str(associacao_af.get("caminho_af"))
+                if associacao_af.get("caminho_af")
+                else "Sem associação AF localizada"
+            ),
+            "contexto_formatado": str(elemento_ete),
+            "variavel_sugerida": nome_atributo_principal,
+            "pi_point_sugerido": resolucao_automatica["tag_principal"],
+            "modo_localizacao": "ASSOCIAÇÃO AUTOMÁTICA",
+            "origem_pi_direta": not bool(associacao_af),
+            "tag_principal": resolucao_automatica["tag_principal"],
+            "resolucao_automatica": resolucao_automatica,
+        }
+        selecao_automatica = {
+            "atributos": [nome_atributo_principal],
+            "variavel_principal": nome_atributo_principal,
+            "escopo": "Exploração ampliada",
+            "caminho_contexto": [str(elemento_ete)],
+        }
+        mapa_periodos = {
+            "Últimas 24 horas": "*-24h",
+            "Últimos 7 dias": "*-7d",
+            "Últimos 30 dias": "*-30d",
+        }
+        if periodo_estudo not in mapa_periodos:
+            st.warning("O período personalizado ainda exige configuração avançada.")
+            return
+        dados_automaticos = {
+            "inicio": mapa_periodos[periodo_estudo],
+            "fim": "*",
+            "carregar": True,
+            "periodo_solicitado": periodo_estudo,
+        }
+        executar_estudo_processo(
+            contexto=contexto_automatico,
+            selecao_estudo=selecao_automatica,
+            dados_estudo=dados_automaticos,
+            objetivo_estudo=objetivo_estudo,
+        )
+        return
+
+    st.info(
+        "Modo avançado: localize manualmente a variável e defina o contexto."
+    )
+
     # ======================================================
     # BASE DE CONHECIMENTO
     # ======================================================
 
-    renderizar_base_conhecimento()
+    with st.expander("📚 Documentos técnicos (opcional)", expanded=False):
+        renderizar_base_conhecimento()
 
     # ======================================================
     # CONTEXTO DO PROCESSO
     # ======================================================
 
     contexto = (
-        renderizar_contexto_processo()
+        renderizar_contexto_processo(
+            database_preselecionada=st.session_state.get(
+                "base_fluxo_estudo",
+                base_operacional,
+            )
+        )
     )
 
     # ======================================================
@@ -3551,5 +4577,6 @@ def renderizar_estudo_processo():
     executar_estudo_processo(
         contexto=contexto,
         selecao_estudo=selecao_estudo,
-        dados_estudo=dados_estudo
+        dados_estudo=dados_estudo,
+        objetivo_estudo=objetivo_estudo
     )

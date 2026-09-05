@@ -13,6 +13,7 @@ __pycache__/
 .env.*
 secrets.toml
 .streamlit/secrets.toml
+.streamlit/maria_token_cache.bin
 
 # VS Code - configurações locais
 .vscode/

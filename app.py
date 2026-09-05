@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 from ui_estudo_processo import renderizar_estudo_processo
+from ui_chat_maria import renderizar_chat_maria
 from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
@@ -347,13 +348,14 @@ with st.expander("🔎 Pipeline de processamento"):
 # ABAS
 # =========================
 
-aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
+aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Visão Operacional",
     "Qualidade dos Dados",
     "Assistente",
     "Configuração da Fonte",
     "Governança PI/AF",
-    "Estudo de Processo"
+    "Estudo de Processo",
+    "Pergunte à MAR.IA",
 ])
 
 
@@ -400,7 +402,7 @@ with aba1:
 
         st.dataframe(
             df_diagnosticos,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -482,7 +484,7 @@ with aba2:
 
         st.dataframe(
             df_ausentes,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -535,7 +537,7 @@ with aba2:
 
         st.dataframe(
             df_gaps,
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
@@ -1079,7 +1081,7 @@ with aba4:
 
                     st.dataframe(
                         df_preview.head(10),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True
                     )
 
@@ -1881,3 +1883,12 @@ with aba5:
 with aba6:
 
   renderizar_estudo_processo()
+
+
+# =========================
+# ABA 7 - CHAT MAR.IA / PI
+# =========================
+
+with aba7:
+
+  renderizar_chat_maria()

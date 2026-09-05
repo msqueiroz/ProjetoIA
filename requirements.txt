@@ -2,3 +2,5 @@ streamlit==1.61.1
 pandas==3.0.5
 pypdf==6.16.1
 requests==2.34.2
+msal==1.38.0
+microsoft-agents-copilotstudio-client==1.5.0

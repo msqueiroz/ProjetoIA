@@ -1,5 +1,7 @@
 import pandas as pd
 
+from topologia_processo import avaliar_elegibilidade_fisica
+
 
 def preparar_historico(
 
@@ -230,14 +232,45 @@ def calcular_correlacao(
 def gerar_ranking_correlacoes(
     historico_principal,
     historicos_comparacao,
-    nome_principal="variavel_principal"
+    nome_principal="variavel_principal",
+    metadados_principal=None,
+    metadados_comparacao=None,
 ):
 
     ranking = []
+    exclusoes_topologicas = []
+
+    if metadados_principal is None:
+        metadados_principal = historico_principal.attrs.get(
+            "contexto_operacional",
+            None,
+        )
 
     for nome_variavel, historico_variavel in historicos_comparacao.items():
 
         try:
+
+            metadados_candidata = None
+            if metadados_comparacao:
+                metadados_candidata = metadados_comparacao.get(nome_variavel)
+            if metadados_candidata is None:
+                metadados_candidata = historico_variavel.attrs.get(
+                    "contexto_operacional",
+                    None,
+                )
+            topologia = avaliar_elegibilidade_fisica(
+                variavel_alvo=nome_principal,
+                variavel_candidata=nome_variavel,
+                metadados_alvo=metadados_principal,
+                metadados_candidata=metadados_candidata,
+            )
+
+            if not topologia["elegivel"]:
+                exclusoes_topologicas.append({
+                    "variavel": nome_variavel,
+                    **topologia,
+                })
+                continue
 
             alinhado = alinhar_series(
                 historico_principal,
@@ -337,6 +370,18 @@ def gerar_ranking_correlacoes(
                         "peso_relevancia"
                     ],
 
+                "elegibilidade_fisica":
+                    topologia["classificacao_topologica"],
+
+                "rota_alvo":
+                    topologia["rota_alvo"],
+
+                "rota_candidata":
+                    topologia["rota_candidata"],
+
+                "motivo_topologia":
+                    topologia["motivo_topologia"],
+
             })
 
         except Exception:
@@ -346,6 +391,8 @@ def gerar_ranking_correlacoes(
     ranking = pd.DataFrame(
         ranking
     )
+
+    ranking.attrs["exclusoes_topologicas"] = exclusoes_topologicas
 
     if ranking.empty:
         return ranking

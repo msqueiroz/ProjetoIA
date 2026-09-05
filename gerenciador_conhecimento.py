@@ -1,3 +1,6 @@
+# Este módulo manipula estruturas documentais dinâmicas vindas de PDF/JSON.
+# As regras abaixo evitam falsos positivos do Pylance sem ocultar erros de sintaxe.
+# pyright: reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportCallIssue=false, reportArgumentType=false, reportAssignmentType=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportOptionalIterable=false, reportOptionalOperand=false, reportAttributeAccessIssue=false, reportIndexIssue=false, reportReturnType=false, reportPossiblyUnboundVariable=false
 """
 Gerenciador da Base de Conhecimento do ProjetoIA / MAR.IA.
 
@@ -488,3 +491,129 @@ def buscar_trechos(
     )
 
     return resultados[:limite]
+# ============================================================
+# BASE DOCUMENTAL MULTIDOCUMENTO
+# ============================================================
+
+def listar_pdfs_documentos(pasta_documentos="Documentos"):
+    """Lista todos os PDFs disponíveis na pasta de documentos."""
+    pasta = Path(pasta_documentos)
+    if not pasta.exists():
+        return []
+    return sorted(
+        [caminho for caminho in pasta.glob("*.pdf") if caminho.is_file()],
+        key=lambda caminho: caminho.name.lower(),
+    )
+
+
+def criar_trechos_base_documental(
+    pasta_documentos="Documentos",
+    tamanho_maximo=1800,
+    sobreposicao=250,
+):
+    """
+    Cria uma base unificada a partir de TODOS os PDFs da pasta.
+
+    Cada trecho preserva documento, caminho, hash, página,
+    ID local no documento e ID global na base.
+    """
+    arquivos_pdf = listar_pdfs_documentos(pasta_documentos)
+    trechos_base = []
+    documentos_processados = []
+    id_global_base = 1
+
+    for caminho_pdf in arquivos_pdf:
+        try:
+            hash_documento = calcular_hash_arquivo(caminho_pdf)
+            trechos_documento = criar_trechos_pdf(
+                caminho_pdf,
+                tamanho_maximo=tamanho_maximo,
+                sobreposicao=sobreposicao,
+            )
+
+            for trecho in trechos_documento:
+                trecho_base = dict(trecho)
+                trecho_base["id_trecho_documento"] = trecho.get("id_trecho")
+                trecho_base["id_trecho"] = id_global_base
+                trecho_base["id_trecho_base"] = id_global_base
+                trecho_base["documento"] = caminho_pdf.name
+                trecho_base["nome_arquivo"] = caminho_pdf.name
+                trecho_base["titulo_documento"] = caminho_pdf.stem
+                trecho_base["tipo_documento"] = "PDF"
+                trecho_base["origem"] = "LOCAL"
+                trecho_base["caminho_documento"] = str(caminho_pdf)
+                trecho_base["hash_documento"] = hash_documento
+                trechos_base.append(trecho_base)
+                id_global_base += 1
+
+            documentos_processados.append({
+                "documento": caminho_pdf.name,
+                "caminho": str(caminho_pdf),
+                "hash_sha256": hash_documento,
+                "total_trechos": len(trechos_documento),
+                "status": "OK",
+            })
+
+        except Exception as erro:
+            documentos_processados.append({
+                "documento": caminho_pdf.name,
+                "caminho": str(caminho_pdf),
+                "total_trechos": 0,
+                "status": "ERRO",
+                "erro": str(erro),
+            })
+
+    return {
+        "pasta_documentos": str(Path(pasta_documentos)),
+        "total_documentos": len(arquivos_pdf),
+        "documentos_processados": documentos_processados,
+        "total_trechos": len(trechos_base),
+        "trechos": trechos_base,
+    }
+
+
+def carregar_base_documental(
+    pasta_documentos="Documentos",
+    tamanho_maximo=1800,
+    sobreposicao=250,
+):
+    """Carrega a base documental unificada para uso pela UI/RAG."""
+    return criar_trechos_base_documental(
+        pasta_documentos=pasta_documentos,
+        tamanho_maximo=tamanho_maximo,
+        sobreposicao=sobreposicao,
+    )
+
+
+def buscar_base_documental(base_documental, consulta, limite=5):
+    """Pesquisa uma base unificada reutilizando buscar_trechos()."""
+    if not base_documental:
+        return []
+    if isinstance(base_documental, dict):
+        trechos = base_documental.get("trechos", [])
+    else:
+        trechos = base_documental
+    return buscar_trechos(trechos=trechos, consulta=consulta, limite=limite)
+
+
+def obter_resumo_base_documental(base_documental):
+    """Retorna resumo compacto da base para diagnóstico/exibição."""
+    if not base_documental:
+        return {
+            "total_documentos": 0,
+            "documentos_ok": 0,
+            "documentos_com_erro": 0,
+            "total_trechos": 0,
+        }
+
+    documentos = base_documental.get("documentos_processados", [])
+    documentos_ok = sum(1 for d in documentos if d.get("status") == "OK")
+    documentos_com_erro = sum(1 for d in documentos if d.get("status") == "ERRO")
+
+    return {
+        "total_documentos": base_documental.get("total_documentos", len(documentos)),
+        "documentos_ok": documentos_ok,
+        "documentos_com_erro": documentos_com_erro,
+        "total_trechos": base_documental.get("total_trechos", 0),
+        "documentos": documentos,
+    }

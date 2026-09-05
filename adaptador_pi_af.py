@@ -129,6 +129,123 @@ def listar_atributos(
         for atributo in elemento_atual.Attributes
     ]
 
+
+def buscar_atributos_por_tag(
+    servidor,
+    database,
+    termo_busca,
+    caminho_raiz=None,
+    limite=50,
+):
+    """Localiza associações AF pelo nome do atributo ou da PI Point.
+
+    A busca consulta apenas metadados e ConfigString. Nenhum valor atual ou
+    histórico é lido durante esta etapa.
+    """
+
+    termo = re.sub(r"[^A-Z0-9]+", "", str(termo_busca or "").upper())
+    if len(termo) < 2:
+        return []
+
+    sistema = conectar_af(servidor)
+    banco = sistema.Databases[database]
+    if banco is None:
+        raise ValueError(f"Database '{database}' não encontrada.")
+
+    caminho_raiz = list(caminho_raiz or [])
+    elementos = banco.Elements
+    elemento_inicial = None
+    for nome_elemento in caminho_raiz:
+        elemento_inicial = elementos[nome_elemento]
+        if elemento_inicial is None:
+            raise ValueError(f"Elemento '{nome_elemento}' não encontrado.")
+        elementos = elemento_inicial.Elements
+
+    resultados = []
+
+    def normalizar(valor):
+        return re.sub(r"[^A-Z0-9]+", "", str(valor or "").upper())
+
+    def visitar(elemento, caminho):
+        if len(resultados) >= limite:
+            return
+
+        for atributo in elemento.Attributes:
+            if len(resultados) >= limite:
+                return
+            try:
+                config_string = str(atributo.ConfigString or "").strip()
+            except Exception:
+                config_string = ""
+
+            match_ponto = re.search(r"\\([^\\?]+)(?:\?\d+)?$", config_string)
+            pi_point = match_ponto.group(1).strip() if match_ponto else ""
+
+            if termo not in normalizar(atributo.Name) and termo not in normalizar(pi_point):
+                continue
+
+            try:
+                uom = str(atributo.DefaultUOM or "")
+            except Exception:
+                uom = ""
+
+            resultados.append({
+                "atributo": str(atributo.Name),
+                "pi_point": pi_point,
+                "elemento": str(elemento.Name),
+                "caminho_elementos": list(caminho),
+                "caminho_af": " > ".join(caminho),
+                "uom": uom,
+                "config_string": config_string,
+            })
+
+        for filho in elemento.Elements:
+            visitar(filho, caminho + [str(filho.Name)])
+
+    if elemento_inicial is not None:
+        visitar(elemento_inicial, caminho_raiz)
+    else:
+        for elemento_raiz in banco.Elements:
+            visitar(elemento_raiz, [str(elemento_raiz.Name)])
+
+    return resultados
+
+
+def buscar_pi_points_por_nome(
+    servidor_pi,
+    termo_busca,
+    limite=50,
+):
+    """Pesquisa PI Points diretamente no Data Archive, sem ler valores."""
+
+    termo = str(termo_busca or "").strip()
+    if len(termo) < 2:
+        return []
+
+    # Evita que curingas informados pelo usuário ampliem a consulta sem querer.
+    termo = termo.replace("*", "").replace("?", "")
+    servidores = PIServers()
+    servidor = servidores[servidor_pi]
+    if servidor is None:
+        raise ValueError(f"Servidor PI '{servidor_pi}' não encontrado.")
+
+    pontos = PIPoint.FindPIPoints(
+        servidor,
+        f"*{termo}*",
+        None,
+        None,
+    )
+
+    resultados = []
+    for ponto in pontos:
+        resultados.append({
+            "pi_point": str(ponto.Name),
+            "servidor_pi": str(servidor.Name),
+        })
+        if len(resultados) >= limite:
+            break
+    return resultados
+
 def obter_valor_atual_atributo(
     servidor,
     database,
