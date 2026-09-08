@@ -576,6 +576,10 @@ def compactar_contexto_engenharia(
         ),
         "consideracoes_dados": contexto.get("consideracoes_dados", []),
         "lacunas_documentais": contexto.get("lacunas_documentais", []),
+        "modo_consulta_documental": bool(
+            contexto.get("modo_consulta_documental", False)
+        ),
+        "base_operacional": contexto.get("base_operacional", ""),
     }
 
 
@@ -587,6 +591,51 @@ def montar_prompt_engenharia(
     contexto = compactar_contexto_engenharia(
         contexto_ia
     )
+
+    if contexto.get("modo_consulta_documental"):
+        trechos_prompt = []
+        for indice, item in enumerate(contexto.get("documentacao", []), start=1):
+            documento = str(item.get("documento", "Documento técnico"))
+            pagina = item.get("pagina")
+            origem = documento + (f", pág. {pagina}" if pagina is not None else "")
+            trechos_prompt.append(
+                f"{indice}. [{origem}]\n{str(item.get('texto', '')).strip()}"
+            )
+        documentacao_prompt = "\n\n".join(trechos_prompt)
+        return f"""
+Você é MAR.IA, assistente técnica de consulta à documentação operacional.
+
+PERGUNTA DO USUÁRIO:
+{contexto.get('objetivo_estudo')}
+
+BASE OPERACIONAL SELECIONADA:
+{contexto.get('base_operacional') or 'não informada'}
+
+TRECHOS DOCUMENTAIS RECUPERADOS:
+{documentacao_prompt}
+
+CONTRATO DE CONFIANÇA:
+1. Responda somente com informações sustentadas pelos trechos fornecidos.
+2. Não invente valores, equipamentos, procedimentos, limites ou relações físicas.
+3. Toda afirmação específica do processo deve citar [documento, pág. N].
+4. Se os trechos não responderem à pergunta, diga claramente que a informação
+   não foi localizada na documentação consultada.
+5. Não transforme recomendações em requisitos existentes.
+6. Sugestões de melhoria devem ficar separadas do conteúdo documentado.
+7. Não recomende alteração automática da operação ou de setpoints.
+
+Responda somente nestas seções:
+
+### 📘 Resposta com base nos manuais
+Responda diretamente à pergunta e inclua as citações junto às afirmações.
+
+### 🔎 O que não foi possível confirmar
+Registre lacunas, ambiguidades ou informações ausentes.
+
+### 🗂️ Sugestões de melhoria da documentação
+Sugira, de forma objetiva, conteúdos, vínculos, nomes ou metadados que poderiam
+melhorar o manual ou a base documental. Identifique tudo como sugestão.
+""".strip()
 
     linhas: list[str] = []
 

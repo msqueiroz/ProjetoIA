@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ui_estudo_processo import renderizar_estudo_processo
 from ui_chat_maria import renderizar_chat_maria
+from ui_visao_equipamentos import renderizar_visao_equipamentos
 from motor_diagnostico import diagnosticar_parada
 from qualidade_dados import gerar_relatorio_qualidade
 from adaptador_fontes import carregar_e_preparar_fonte
@@ -348,8 +349,9 @@ with st.expander("🔎 Pipeline de processamento"):
 # ABAS
 # =========================
 
-aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
+aba1, aba_equipamentos, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
     "Visão Operacional",
+    "Visão de Equipamentos (Piloto)",
     "Qualidade dos Dados",
     "Assistente",
     "Configuração da Fonte",
@@ -411,6 +413,14 @@ with aba1:
         st.info(
             "Nenhuma parada detectada na base selecionada."
         )
+
+
+# =========================
+# ABA PILOTO - VISÃO DE EQUIPAMENTOS
+# =========================
+
+with aba_equipamentos:
+    renderizar_visao_equipamentos()
 
 
 # =========================

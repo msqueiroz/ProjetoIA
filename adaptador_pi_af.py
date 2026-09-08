@@ -246,6 +246,38 @@ def buscar_pi_points_por_nome(
             break
     return resultados
 
+
+def obter_valor_atual_pi_point(servidor_pi, nome_pi_point):
+    """Lê o valor instantâneo de uma PI Point diretamente no Data Archive."""
+
+    servidores = PIServers()
+    servidor = servidores[servidor_pi]
+    if servidor is None:
+        raise ValueError(f"Servidor PI '{servidor_pi}' não encontrado.")
+
+    try:
+        ponto = PIPoint.FindPIPoint(servidor, nome_pi_point)
+    except Exception as erro:
+        raise ValueError(
+            f"PI Point '{nome_pi_point}' não encontrada: {erro}"
+        ) from erro
+    if ponto is None:
+        raise ValueError(f"PI Point '{nome_pi_point}' não encontrada.")
+
+    try:
+        valor = ponto.CurrentValue()
+    except Exception as erro:
+        raise RuntimeError(
+            f"Erro ao consultar o valor atual da PI Point '{nome_pi_point}': {erro}"
+        ) from erro
+
+    return {
+        "valor": str(valor.Value),
+        "timestamp": str(valor.Timestamp),
+        "pi_point": str(ponto.Name),
+        "servidor_pi": str(servidor.Name),
+    }
+
 def obter_valor_atual_atributo(
     servidor,
     database,
