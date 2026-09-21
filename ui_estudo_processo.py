@@ -49,6 +49,40 @@ from topologia_processo import (
     resolver_objetivo_estudo,
     sugerir_termos_busca_objetivo,
 )
+from indicadores_calculados import extrair_data, identificar_calculos, listar_catalogo_calculos
+from ui_chat_maria import responder_chat_maria
+
+
+def renderizar_catalogo_calculos_estudo(
+    objetivo: str,
+    servidor: str | None = None,
+    database: str | None = None,
+    executar: bool = False,
+) -> None:
+    """Mostra e, quando possível, executa cálculos determinísticos do objetivo."""
+
+    calculos = identificar_calculos(objetivo)
+    with st.expander("🧮 Cálculos de engenharia disponíveis", expanded=bool(calculos)):
+        for item in listar_catalogo_calculos():
+            indicador = "✅" if item["status"] == "OPERACIONAL" else "🧩"
+            st.markdown(f"{indicador} **{item['nome']}** — {item['status']}")
+            st.caption(f"{item['formula']} · Resultado em {item['resultado_unidade']}")
+
+    if not calculos:
+        return
+
+    nomes = {
+        item["codigo"]: item["nome"] for item in listar_catalogo_calculos()
+    }
+    st.info(
+        "Cálculos relacionados ao objetivo: **"
+        + ", ".join(nomes[codigo] for codigo in calculos)
+        + "**."
+    )
+    if executar and "tdh" in calculos and servidor and database:
+        st.markdown("### 🧮 Resultado calculado para o estudo")
+        resultado = responder_chat_maria(servidor, database, objetivo)
+        st.markdown(str(resultado.get("content", "Não foi possível calcular.")))
 
 
 # ==========================================================
@@ -2052,6 +2086,20 @@ def executar_estudo_processo(
         renderizar_interpretacao_ia()
         return
 
+    calculos_objetivo = identificar_calculos(objetivo_estudo)
+    if "tdh" in calculos_objetivo:
+        st.markdown("### 🧮 Cálculo de engenharia do objetivo")
+        resultado_calculo = responder_chat_maria(
+            str(contexto.get("servidor", "CE-SRV11")),
+            str(contexto.get("database", "")),
+            str(objetivo_estudo),
+        )
+        st.markdown(str(resultado_calculo.get("content", "Não foi possível calcular.")))
+        # Uma pergunta datada é uma consulta de indicador, não uma investigação
+        # de correlação. Evita pesquisar uma "tag TDH" inexistente em seguida.
+        if extrair_data(objetivo_estudo) is not None:
+            return
+
     variavel_principal = (
         selecao_estudo[
             "variavel_principal"
@@ -3645,6 +3693,76 @@ def executar_estudo_processo(
                         "geração de hipótese antecipatória."
                     )
 
+                    # A ausência de uma hipótese antecipatória também é um
+                    # resultado técnico que pode ser interpretado pela IA.
+                    # Antes, toda a seção de IA ficava presa ao ramo ``else``
+                    # abaixo e desaparecia justamente nos estudos
+                    # inconclusivos ou com relações em direção inversa.
+                    evidencias_temporais = []
+                    for _, linha_evidencia in df_temporal.iterrows():
+                        evidencias_temporais.append({
+                            "variavel": linha_evidencia.get("variavel"),
+                            "direcao_temporal": linha_evidencia.get(
+                                "direcao_temporal"
+                            ),
+                            "defasagem": linha_evidencia.get("defasagem"),
+                            "melhor_correlacao": linha_evidencia.get(
+                                "melhor_correlacao"
+                            ),
+                            "correlacao_sem_defasagem": linha_evidencia.get(
+                                "correlacao_sem_defasagem"
+                            ),
+                            "pontos_validos": int(
+                                linha_evidencia.get("pontos_validos", 0)
+                            ),
+                            "score_evidencia_temporal": int(
+                                linha_evidencia.get(
+                                    "score_evidencia_temporal",
+                                    0,
+                                )
+                            ),
+                            "classificacao_evidencia_temporal": (
+                                linha_evidencia.get(
+                                    "classificacao_evidencia_temporal"
+                                )
+                            ),
+                        })
+
+                    novo_contexto_ia = {
+                        "objetivo_estudo": str(objetivo_estudo or "").strip(),
+                        "variavel_principal": variavel_principal,
+                        "resultado_deterministico": (
+                            "Nenhuma variável avaliada apresentou "
+                            "antecedência temporal suficiente. Relações "
+                            "simultâneas ou em direção inversa não devem ser "
+                            "tratadas como causas antecedentes."
+                        ),
+                        "evidencias_temporais": evidencias_temporais,
+                        "cobertura_principal_pct": (
+                            cobertura_pct if horas_solicitadas else None
+                        ),
+                        "registros_principal": len(historico_principal),
+                        "limitacoes": [
+                            "A análise não comprovou causalidade.",
+                            "Não foi identificada hipótese antecipatória.",
+                            "A IA deve explicar as lacunas e sugerir somente "
+                            "verificações adicionais seguras.",
+                        ],
+                    }
+
+                    contexto_anterior = st.session_state.get(
+                        "contexto_ia_estudo_processo"
+                    )
+                    if contexto_anterior != novo_contexto_ia:
+                        st.session_state["resultado_ia_estudo_processo"] = None
+                        st.session_state.pop("assinatura_ia_automatica", None)
+
+                    st.session_state[
+                        "contexto_ia_estudo_processo"
+                    ] = novo_contexto_ia
+
+                    renderizar_interpretacao_ia()
+
                 else:
 
                     candidatos_hipotese = (
@@ -4253,6 +4371,8 @@ def renderizar_estudo_processo():
         key="configuracao_avancada_estudo",
         help="Use somente quando a MAR.IA não conseguir identificar o alvo automaticamente.",
     )
+
+    renderizar_catalogo_calculos_estudo(objetivo_estudo)
 
     if not configuracao_avancada:
         assinatura_descoberta = (

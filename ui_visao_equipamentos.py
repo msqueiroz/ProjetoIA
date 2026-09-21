@@ -1,14 +1,16 @@
 import re
+import time
 import unicodedata
 
 import pandas as pd
 import streamlit as st
 
 from adaptador_pi_af import (
-    inventariar_familia,
+    inventariar_familia_operacional,
     listar_databases,
     listar_elementos,
 )
+from unidades_engenharia import formatar_unidade_engenharia
 
 
 ESTADOS = [
@@ -19,6 +21,16 @@ ESTADOS = [
     "PARADO — CONDIÇÃO NÃO CONFIRMADA",
     "NÃO DETERMINADO",
 ]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _listar_databases(servidor):
+    return list(listar_databases(servidor))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _listar_areas(servidor, database):
+    return list(listar_elementos(servidor, database, []))
 
 
 def _normalizar(valor):
@@ -59,6 +71,19 @@ def _falso(valor):
     )
 
 
+def _formatar_evidencia(linha):
+    atributo = str(linha.get("atributo", ""))
+    valor = linha.get("valor_atual", "")
+    unidade = formatar_unidade_engenharia(linha.get("uom", ""))
+    numero = _numero(valor)
+
+    if numero is not None and unidade:
+        valor_formatado = f"{numero:.2f}".replace(".", ",")
+        return f"{atributo}={valor_formatado} {unidade}"
+
+    return f"{atributo}={valor}"
+
+
 def classificar_equipamento(grupo):
     sinais = []
     manutencao = []
@@ -70,7 +95,7 @@ def classificar_equipamento(grupo):
     for _, linha in grupo.iterrows():
         atributo = _normalizar(linha.get("atributo"))
         valor = linha.get("valor_atual", "")
-        leitura = f"{linha.get('atributo', '')}={valor}"
+        leitura = _formatar_evidencia(linha)
 
         if str(linha.get("status_leitura", "")).upper() != "OK":
             continue
@@ -128,13 +153,32 @@ def consolidar_equipamentos(inventario):
     if inventario.empty:
         return pd.DataFrame()
 
+    caminhos = {
+        str(caminho)
+        for caminho in inventario["caminho_elemento"].dropna().unique()
+    }
+    agregadores = {
+        caminho
+        for caminho in caminhos
+        if any(
+            outro != caminho and outro.startswith(caminho + " > ")
+            for outro in caminhos
+        )
+        or re.fullmatch(
+            r"ta\s*-?\s*\d+",
+            _normalizar(caminho.split(" > ")[-1]),
+        )
+    }
+
     registros = []
     for caminho, grupo in inventario.groupby("caminho_elemento", dropna=False):
+        caminho = str(caminho)
         estado, evidencia = classificar_equipamento(grupo)
         leituras_validas = grupo[grupo["status_leitura"].astype(str).str.upper() == "OK"]
         timestamps = leituras_validas["timestamp"].dropna().astype(str)
         registros.append({
             "Área / equipamento": caminho,
+            "Tipo de item": "ÁREA / AGRUPADOR" if caminho in agregadores else "EQUIPAMENTO",
             "Estado inferido": estado,
             "Evidência utilizada": evidencia,
             "Sinais encontrados": len(grupo),
@@ -161,7 +205,7 @@ def renderizar_visao_equipamentos():
     )
 
     try:
-        databases = listar_databases(servidor)
+        databases = _listar_databases(servidor)
     except Exception as erro:
         st.error(f"Não foi possível consultar o servidor PI/AF: {erro}")
         return
@@ -179,7 +223,7 @@ def renderizar_visao_equipamentos():
     )
 
     try:
-        areas = listar_elementos(servidor, database, [])
+        areas = _listar_areas(servidor, database)
     except Exception as erro:
         st.error(f"Não foi possível listar as áreas da base: {erro}")
         return
@@ -197,13 +241,18 @@ def renderizar_visao_equipamentos():
     if st.button("🔄 Atualizar estados pelo PI", key="equipamentos_atualizar", type="primary"):
         with st.spinner("Consultando a estrutura e os valores atuais do PI/AF..."):
             try:
-                inventario = inventariar_familia(
+                inicio = time.perf_counter()
+                inventario = inventariar_familia_operacional(
                     servidor=servidor,
                     database=database,
                     caminho_pai=[area],
                 )
                 st.session_state["equipamentos_resultado"] = consolidar_equipamentos(inventario)
                 st.session_state["equipamentos_contexto"] = (servidor, database, area)
+                st.session_state["equipamentos_desempenho"] = {
+                    "tempo_s": time.perf_counter() - inicio,
+                    "sinais_lidos": int((inventario["status_leitura"] == "OK").sum()),
+                }
             except Exception as erro:
                 st.error(f"Não foi possível montar a visão da área: {erro}")
                 return
@@ -213,8 +262,21 @@ def renderizar_visao_equipamentos():
     if contexto != (servidor, database, area) or painel is None:
         st.info("Selecione a área e clique em Atualizar estados pelo PI.")
         return
+    if "Tipo de item" not in painel.columns:
+        st.info("A regra de contagem foi atualizada. Clique novamente em Atualizar estados pelo PI.")
+        return
 
-    contagens = painel["Estado inferido"].value_counts()
+    desempenho = st.session_state.get("equipamentos_desempenho", {})
+    if desempenho:
+        st.success(
+            f"Atualização concluída em {desempenho.get('tempo_s', 0):.1f} s — "
+            f"{desempenho.get('sinais_lidos', 0)} sinais operacionais lidos."
+        )
+
+    equipamentos = painel[painel["Tipo de item"] == "EQUIPAMENTO"].copy()
+    agregadores = painel[painel["Tipo de item"] == "ÁREA / AGRUPADOR"].copy()
+
+    contagens = equipamentos["Estado inferido"].value_counts()
     colunas = st.columns(5)
     indicadores = [
         ("Em operação", "EM OPERAÇÃO"),
@@ -240,10 +302,22 @@ def renderizar_visao_equipamentos():
         key="equipamentos_filtro_estado",
     )
     st.dataframe(
-        painel[painel["Estado inferido"].isin(filtro)],
+        equipamentos[equipamentos["Estado inferido"].isin(filtro)],
         width="stretch",
         hide_index=True,
     )
+
+    if not agregadores.empty:
+        st.caption(
+            f"{len(agregadores)} área(s) ou agrupador(es) foram excluídos da "
+            "contagem de equipamentos."
+        )
+        with st.expander("Ver indicadores agregados das áreas"):
+            st.dataframe(
+                agregadores,
+                width="stretch",
+                hide_index=True,
+            )
 
     st.caption(
         "O painel não transforma automaticamente equipamento desligado em disponível. "

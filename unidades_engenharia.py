@@ -40,6 +40,10 @@ UNIDADES_APRESENTACAO = {
     "days": "d",
     "hour": "h",
     "hours": "h",
+    "minute": "min",
+    "minutes": "min",
+    "second": "s",
+    "seconds": "s",
     "meter": "m",
     "meters": "m",
 }

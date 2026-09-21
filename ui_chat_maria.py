@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,40 @@ from gerenciador_conhecimento import (
     carregar_base_documental,
 )
 from unidades_engenharia import formatar_unidade_engenharia
+from indicadores_calculados import (
+    converter_vazao_m3_h,
+    extrair_data,
+    extrair_tanque,
+    identificar_pedido_tdh,
+    listar_catalogo_calculos,
+    obter_dados_tanque,
+    resumir_vazao_ponderada,
+)
+
+
+def _solicitou_catalogo_calculos(pergunta: Any) -> bool:
+    texto = _normalizar(pergunta)
+    return "calculo" in texto and any(
+        termo in texto for termo in ("quais", "disponiveis", "catalogo", "pode fazer")
+    )
+
+
+def _responder_catalogo_calculos() -> dict[str, Any]:
+    linhas = []
+    for item in listar_catalogo_calculos():
+        entradas = ", ".join(item["entradas"])
+        linhas.append(
+            f"- **{item['nome']}** — {item['status']}. "
+            f"Entradas: {entradas}. Resultado: {item['resultado_unidade']}."
+        )
+    return {
+        "content": (
+            "Estes são os cálculos de engenharia disponíveis no catálogo compartilhado:\n\n"
+            + "\n".join(linhas)
+            + "\n\nOs cálculos usam dados do PI somente quando os sinais e as unidades "
+              "podem ser identificados com segurança."
+        )
+    }
 
 
 PALAVRAS_COMUNS = {
@@ -777,6 +812,383 @@ def _responder_grafico(servidor: str, database: str, pergunta: str) -> dict[str,
     }
 
 
+def _candidatos_vazao_tanque(
+    servidor: str,
+    database: str,
+    tanque: str,
+    sentido: str,
+) -> list[dict[str, Any]]:
+    catalogo = _catalogar_atributos(servidor, database)
+    numero_tanque = int(re.search(r"\d+", str(tanque)).group())
+
+    def caminho_possui_tanque_exato(segmentos: list[Any]) -> bool:
+        for segmento in segmentos:
+            nome = _normalizar(segmento)
+            encontrado = re.fullmatch(r"ta\s*0*(\d+)", nome)
+            if encontrado and int(encontrado.group(1)) == numero_tanque:
+                return True
+        return False
+
+    candidatos = []
+    for item in catalogo:
+        atributo = _normalizar(item.get("atributo", ""))
+        segmentos = list(item.get("caminho", []))
+        caminho_normalizado = _normalizar(" ".join(str(x) for x in segmentos))
+        tanque_exato = caminho_possui_tanque_exato(segmentos)
+        # O manual do TA-3 informa que o lodo reciclado entra pela CDV-9;
+        # essa medição pode estar cadastrada fora do elemento do tanque.
+        rota_cdv9 = numero_tanque == 3 and bool(
+            re.search(r"\bcdv\s*0*9\b", f"{caminho_normalizado} {atributo}")
+        )
+        rota_ela3 = numero_tanque == 3 and bool(
+            re.search(r"\bela\s*0*3\b", f"{caminho_normalizado} {atributo}")
+        )
+        if "vazao" not in atributo:
+            continue
+        if sentido == "reciclo":
+            if not (tanque_exato or rota_cdv9 or rota_ela3):
+                continue
+        elif not tanque_exato:
+            continue
+        if sentido != "reciclo" and any(
+            termo in atributo for termo in ("reciclo", "recircul", "descarte", "ideal")
+        ):
+            continue
+        if sentido == "reciclo" and any(
+            termo in atributo for termo in (
+                "descart", "excesso", "purga", "waste", "was ",
+                "totaliz", "acumul",
+            )
+        ):
+            continue
+        pontos = 10
+        if sentido == "entrada":
+            termos_sentido = ("ent", "entrada", "afluente")
+            termos_opostos = ("saida", "efluente", "reciclo", "recircul")
+        elif sentido == "reciclo":
+            termos_sentido = ("reciclo", "recircul", "retorno")
+            termos_opostos = ("saida", "efluente", "descarte")
+        else:
+            termos_sentido = ("saida", "efluente")
+            termos_opostos = ("ent", "entrada", "afluente", "reciclo", "recircul")
+        if any(termo in atributo for termo in termos_opostos):
+            continue
+        corresponde_sentido = (
+            (rota_cdv9 or rota_ela3 or any(termo in atributo for termo in termos_sentido))
+            if sentido == "reciclo"
+            else any(termo in atributo.split() for termo in termos_sentido)
+        )
+        if not corresponde_sentido:
+            continue
+        pontos += 10
+        if re.search(rf"\bta\s*0*{numero_tanque}\b", atributo):
+            pontos += 3
+        if segmentos and _normalizar(segmentos[0]) == _normalizar(database):
+            pontos += 20
+        if rota_cdv9:
+            pontos += 15
+        if rota_ela3:
+            pontos += 12
+        candidato = dict(item)
+        candidato["pontuacao_tdh"] = pontos
+        candidatos.append(candidato)
+    return sorted(
+        candidatos,
+        key=lambda item: (-item["pontuacao_tdh"], len(item["caminho"]), item["atributo"]),
+    )
+
+
+def _candidato_unico_tdh(candidatos):
+    if not candidatos:
+        return None, []
+    melhor = candidatos[0]
+    empatados = [
+        item for item in candidatos
+        if item["pontuacao_tdh"] == melhor["pontuacao_tdh"]
+    ]
+    if len(empatados) == 1:
+        return melhor, []
+    return None, empatados
+
+
+def _candidatos_reciclo_smt(
+    servidor: str,
+    tanque: str,
+) -> list[dict[str, Any]]:
+    """Procura no Data Archive o reciclo não associado ao AF."""
+
+    numero = int(re.search(r"\d+", str(tanque)).group())
+    termos = [
+        f"TA-{numero}", f"TA{numero}", "RECIRC", "RECICLO", "LODO",
+        "VAZ", "FLOW", "RETORNO", "RAS",
+    ]
+    if numero == 3:
+        termos.extend(["CDV-9", "CDV9", "ELA-3", "ELA3"])
+
+    encontrados: dict[str, dict[str, Any]] = {}
+    for termo in termos:
+        try:
+            resultados = _buscar_pi_points_chat(servidor, termo)
+        except Exception:
+            continue
+        for item in resultados:
+            nome = str(item.get("pi_point", ""))
+            chave = nome.upper()
+            if nome and chave not in encontrados:
+                encontrados[chave] = dict(item)
+
+    candidatos = []
+    for item in encontrados.values():
+        nome = _normalizar(item.get("pi_point", ""))
+        descricao = _normalizar(item.get("descricao", ""))
+        texto = f"{nome} {descricao}"
+        tanques_explicitos = {
+            int(valor) for valor in re.findall(r"\bta\s*0*(\d+)\b", texto)
+        }
+        unidade = formatar_unidade_engenharia(item.get("unidade", ""))
+        rota_tanque = bool(re.search(rf"\bta\s*0*{numero}\b", texto))
+        rota_cdv9 = numero == 3 and bool(re.search(r"\bcdv\s*0*9\b", texto))
+        rota_ela3 = numero == 3 and bool(re.search(r"\bela\s*0*3\b", texto))
+        reciclo = any(x in texto for x in ("reciclo", "recircul", "retorno", "lodo"))
+        vazao = any(x in texto for x in ("vazao", "flow", "fi ", "fit ", "ft "))
+        unidade_vazao = unidade in ("m³/h", "m3/h", "m³/s", "m3/s", "L/s", "L/h")
+        grandeza_incompativel = any(
+            x in texto for x in (
+                "solidos", "suspensos", "concentracao", "turbidez", "dqo",
+                "dbo", "nh3", "amonia", "oxigenio", "ph ", "temperatura",
+                "descart", "excesso", "purga", "waste", "was ",
+            )
+        )
+        sinal_manutencao = bool(re.search(r"\bmnt\b|\bmanutenc", texto))
+        sinal_totalizador = bool(
+            re.search(r"^fq\b|^fqi\b|\btotaliz|\bacumul", texto)
+        )
+        outro_tanque = bool(tanques_explicitos and numero not in tanques_explicitos)
+        if not (rota_cdv9 or rota_ela3 or (rota_tanque and reciclo)):
+            continue
+        if (
+            grandeza_incompativel
+            or sinal_manutencao
+            or sinal_totalizador
+            or outro_tanque
+            or not (vazao or unidade_vazao)
+        ):
+            continue
+        pontos = (
+            10 + (25 if rota_cdv9 else 0) + (22 if rota_ela3 else 0)
+            + (20 if reciclo else 0) + (10 if vazao else 0)
+        )
+        candidatos.append({
+            "caminho": ["SMT", str(item.get("pi_point", ""))],
+            "elemento": "SMT",
+            "atributo": str(item.get("descricao") or item.get("pi_point", "")),
+            "unidade": str(item.get("unidade", "")),
+            "origem": "SMT",
+            "pi_point": str(item.get("pi_point", "")),
+            "pontuacao_tdh": pontos,
+        })
+    return sorted(candidatos, key=lambda x: (-x["pontuacao_tdh"], x["pi_point"]))
+
+
+def _historico_intervalo_numerico(
+    servidor: str,
+    database: str,
+    candidato: dict[str, Any],
+    inicio: str,
+    fim: str,
+) -> pd.DataFrame:
+    if candidato.get("origem") == "SMT":
+        dados = carregar_historico_pi_point(
+            servidor_pi=servidor,
+            nome_pi_point=candidato["pi_point"],
+            inicio=inicio,
+            fim=fim,
+        ).copy()
+    else:
+        dados = carregar_historico_atributo(
+            servidor=servidor,
+            database=database,
+            caminho_elementos=candidato["caminho"],
+            nome_atributo=candidato["atributo"],
+            inicio=inicio,
+            fim=fim,
+        ).copy()
+    if dados.empty:
+        return dados
+    dados["valor"] = pd.to_numeric(
+        dados["valor"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce",
+    )
+    dados["data_hora"] = pd.to_datetime(dados["data_hora"], errors="coerce", dayfirst=True)
+    return dados.dropna(subset=["data_hora", "valor"]).sort_values("data_hora")
+
+
+def _responder_tdh(servidor: str, database: str, pergunta: str) -> dict[str, Any]:
+    tanque = extrair_tanque(pergunta)
+    data_consulta = extrair_data(pergunta)
+    if not tanque:
+        return {"content": "Informe o tanque do cálculo, por exemplo **TA-3**."}
+    if not data_consulta:
+        return {
+            "content": (
+                "Informe a data desejada no formato **dia/mês/ano**, por exemplo "
+                f"**Qual foi o TDH do {tanque} em 07/09/2026?**"
+            )
+        }
+
+    configuracao = obter_dados_tanque(tanque)
+    if not configuracao or not configuracao.get("volume_util_m3"):
+        return {
+            "content": (
+                f"Não encontrei um volume útil documentado para **{tanque}**. "
+                "O TDH não será calculado até esse dado ser confirmado."
+            )
+        }
+
+    inicio_data = data_consulta.isoformat() + " 00:00:00"
+    fim_data = (data_consulta + timedelta(days=1)).isoformat() + " 00:00:00"
+
+    entrada, ambiguos_entrada = _candidato_unico_tdh(
+        _candidatos_vazao_tanque(servidor, database, tanque, "entrada")
+    )
+    candidatos_reciclo = _candidatos_vazao_tanque(
+        servidor, database, tanque, "reciclo"
+    )
+    if not candidatos_reciclo:
+        candidatos_reciclo = _candidatos_reciclo_smt(servidor, tanque)
+    reciclo, ambiguos_reciclo = _candidato_unico_tdh(candidatos_reciclo)
+    if not entrada or not reciclo:
+        if ambiguos_entrada or ambiguos_reciclo:
+            linhas = []
+            linhas.extend(
+                f"- Entrada: {' / '.join(item['caminho'])} — {item['atributo']}"
+                for item in ambiguos_entrada[:4]
+            )
+            linhas.extend(
+                f"- Reciclo de lodo: {' / '.join(item['caminho'])} — {item['atributo']}"
+                for item in ambiguos_reciclo[:4]
+            )
+            return {
+                "content": (
+                    "O cálculo robusto encontrou sinais hidráulicos ambíguos. "
+                    f"Confirme os sinais do **{tanque}**:\n\n" + "\n".join(linhas)
+                )
+            }
+
+        faltantes = []
+        if not entrada:
+            faltantes.append("vazão afluente")
+        if not reciclo:
+            faltantes.append("vazão de reciclo de lodo")
+        return {
+            "content": (
+                f"Encontrei o volume útil de **{tanque}**, mas faltou "
+                f"**{' e '.join(faltantes)}** no contexto AF. O TDH robusto não será "
+                "calculado sem somar as duas entradas do tanque. Cadastre ou confirme "
+                "os atributos corretos no AF."
+            )
+        }
+
+    historico_entrada = _historico_intervalo_numerico(
+        servidor, database, entrada, inicio_data, fim_data
+    )
+    historico_reciclo = _historico_intervalo_numerico(
+        servidor, database, reciclo, inicio_data, fim_data
+    )
+    if historico_entrada.empty or historico_reciclo.empty:
+        return {
+            "content": (
+                f"Não há registros válidos simultâneos de efluente e reciclo de lodo para "
+                f"{data_consulta:%d/%m/%Y}."
+            )
+        }
+
+    entrada_convertida, unidade_entrada = converter_vazao_m3_h(
+        historico_entrada["valor"], entrada.get("unidade"), entrada.get("atributo")
+    )
+    reciclo_convertido, unidade_reciclo = converter_vazao_m3_h(
+        historico_reciclo["valor"], reciclo.get("unidade"), reciclo.get("atributo")
+    )
+    if entrada_convertida is None or reciclo_convertido is None:
+        return {
+            "content": (
+                "As vazões foram localizadas, mas as unidades não permitem uma "
+                f"conversão segura: efluente **{unidade_entrada}**; reciclo de lodo "
+                f"**{unidade_reciclo}**. O cálculo foi bloqueado."
+            )
+        }
+    historico_entrada["valor"] = entrada_convertida
+    historico_reciclo["valor"] = reciclo_convertido
+    resumo_efluente = resumir_vazao_ponderada(historico_entrada)
+    resumo_reciclo = resumir_vazao_ponderada(historico_reciclo)
+    q_efluente = float(resumo_efluente["vazao_media_m3_h"])
+    q_reciclo = float(resumo_reciclo["vazao_media_m3_h"])
+    q_total = q_efluente + q_reciclo
+    volume_util = float(configuracao["volume_util_m3"])
+    tdh = volume_util / q_total
+    cobertura = min(
+        float(resumo_efluente["cobertura_observada_h"]),
+        float(resumo_reciclo["cobertura_observada_h"]),
+    )
+    confianca = "ALTA" if cobertura >= 20 else "LIMITADA"
+    fonte = configuracao.get("fonte", {})
+    projeto = configuracao.get("tempo_detencao_projeto_h")
+    comparacao = (
+        f"  \n**TDH de projeto documentado:** {float(projeto):.2f} h."
+        if projeto is not None else ""
+    )
+    return {
+        "content": (
+            f"O **TDH operacional do {tanque}** em **{data_consulta:%d/%m/%Y}** "
+            f"foi **{tdh:.2f} h**.  \n"
+            f"**Vazão média do efluente:** {q_efluente:.2f} m³/h  \n"
+            f"**Vazão média do lodo de reciclo:** {q_reciclo:.2f} m³/h  \n"
+            f"**Vazão total considerada:** {q_total:.2f} m³/h  \n"
+            f"**Volume útil:** {volume_util:,.0f} m³  \n"
+            f"**Cobertura mínima das duas séries:** {cobertura:.2f} h  \n"
+            f"**Confiança da cobertura:** {confianca}"
+            f"{comparacao}\n\n"
+            "**Cálculo:** TDH = volume útil / (vazão do efluente + vazão do lodo de reciclo).  \n"
+            f"**Efluente:** {' / '.join(entrada['caminho'])} — {entrada['atributo']}.  \n"
+            f"**Reciclo:** {' / '.join(reciclo['caminho'])} — {reciclo['atributo']}.  \n"
+            f"**Fonte do volume:** {fonte.get('documento', 'documentação técnica')}, "
+            f"{configuracao.get('secao', 'seção não informada')}.  \n"
+            "As médias das duas vazões são ponderadas pelo tempo no período consultado."
+        )
+    }
+
+
+def responder_chat_maria(
+    servidor: str,
+    database: str,
+    pergunta: str,
+    provedor: str | None = None,
+    modelo: str | None = None,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Ponto único de entrada para Streamlit, Teams e outros canais."""
+
+    if _solicitou_catalogo_calculos(pergunta):
+        return _responder_catalogo_calculos()
+    if identificar_pedido_tdh(pergunta):
+        return _responder_tdh(servidor, database, pergunta)
+    if _informou_apenas_equipamento(pergunta):
+        return _responder_pedido_ambiguo(pergunta)
+    if _solicitou_lista_documentos(pergunta):
+        return _responder_lista_documentos(str(database))
+    if _solicitou_conhecimento(pergunta):
+        return _responder_documentacao(
+            str(database), pergunta, provedor, modelo, token
+        )
+    if _solicitou_contexto_operacional(pergunta):
+        return _responder_contexto_operacional(servidor, database, pergunta)
+    if _solicitou_relacao(pergunta):
+        return _responder_relacao(servidor, database, pergunta)
+    if _solicitou_grafico(pergunta):
+        return _responder_grafico(servidor, database, pergunta)
+    return {"content": _responder_pergunta(servidor, database, pergunta)}
+
+
 def renderizar_chat_maria() -> None:
     """Renderiza uma experiência curta de pergunta e resposta sobre o PI."""
 
@@ -961,30 +1373,14 @@ def renderizar_chat_maria() -> None:
         historico.append({"role": "user", "content": pergunta})
         try:
             with st.spinner("Consultando dados e conhecimento disponíveis..."):
-                if _informou_apenas_equipamento(pergunta):
-                    resposta = _responder_pedido_ambiguo(pergunta)
-                elif _solicitou_lista_documentos(pergunta):
-                    resposta = _responder_lista_documentos(str(database))
-                elif _solicitou_conhecimento(pergunta):
-                    resposta = _responder_documentacao(
-                        str(database),
-                        pergunta,
-                        provedor_chat,
-                        modelo_chat,
-                        token_chat,
-                    )
-                elif _solicitou_contexto_operacional(pergunta):
-                    resposta = _responder_contexto_operacional(
-                        servidor,
-                        database,
-                        pergunta,
-                    )
-                elif _solicitou_relacao(pergunta):
-                    resposta = _responder_relacao(servidor, database, pergunta)
-                elif _solicitou_grafico(pergunta):
-                    resposta = _responder_grafico(servidor, database, pergunta)
-                else:
-                    resposta = {"content": _responder_pergunta(servidor, database, pergunta)}
+                resposta = responder_chat_maria(
+                    servidor=servidor,
+                    database=str(database),
+                    pergunta=pergunta,
+                    provedor=provedor_chat,
+                    modelo=modelo_chat,
+                    token=token_chat,
+                )
         except Exception as erro:
             resposta = {"content": f"Não foi possível concluir a consulta ao PI: `{erro}`"}
         historico.append({"role": "assistant", **resposta})

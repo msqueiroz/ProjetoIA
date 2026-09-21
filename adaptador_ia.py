@@ -31,11 +31,43 @@ from typing import Any
 
 
 OLLAMA_URL_PADRAO = "http://localhost:11434/api/chat"
+CAMINHO_INSTRUCAO_BASE = (
+    Path(__file__).resolve().parent
+    / "configuracoes_ia"
+    / "instrucao_base.md"
+)
 CAMINHO_CACHE_MARIA = (
     Path(__file__).resolve().parent
     / ".streamlit"
     / "maria_token_cache.bin"
 )
+
+INSTRUCAO_BASE_PADRAO = """Você é a MAR.IA, assistente de engenharia industrial.
+Use somente as evidências fornecidas pela aplicação. Não invente valores,
+tags, equipamentos ou causalidade. Informe fontes e limitações quando
+disponíveis. Não execute nem recomende alterações automáticas no processo.
+A decisão final permanece com os profissionais autorizados."""
+
+
+def carregar_instrucao_base() -> str:
+    """Carrega a instrução compartilhada por todos os provedores de IA."""
+
+    try:
+        conteudo = CAMINHO_INSTRUCAO_BASE.read_text(encoding="utf-8").strip()
+        return conteudo or INSTRUCAO_BASE_PADRAO
+    except OSError:
+        return INSTRUCAO_BASE_PADRAO
+
+
+def _prompt_com_instrucao_base(prompt_tarefa: str) -> str:
+    """Anexa ao Copilot a mesma instrução de sistema usada pelo Ollama."""
+
+    return (
+        "INSTRUÇÕES GERAIS DO ASSISTENTE:\n"
+        f"{carregar_instrucao_base()}\n\n"
+        "INSTRUÇÕES E CONTEXTO DESTA TAREFA:\n"
+        f"{prompt_tarefa.strip()}"
+    )
 
 
 class _DataBlob(ctypes.Structure):
@@ -938,11 +970,7 @@ def consultar_ollama(
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Você é MAR.IA, assistente de investigação de "
-                    "engenharia de processo. Interprete as evidências "
-                    "do motor sem inventar valores ou causalidade."
-                ),
+                "content": carregar_instrucao_base(),
             },
             {
                 "role": "user",
@@ -1113,7 +1141,40 @@ async def _consultar_maria_assincrono(prompt: str, token: str) -> str:
 def consultar_maria(contexto_ia: Mapping[str, Any], token: str) -> dict[str, Any]:
     """Envia a evidência determinística à MAR.IA autenticada."""
     try:
-        texto = asyncio.run(_consultar_maria_assincrono(montar_prompt_engenharia(contexto_ia), token))
+        prompt = _prompt_com_instrucao_base(
+            montar_prompt_engenharia(contexto_ia)
+        )
+
+        # No Windows, o Proactor pode registrar WinError 10054 ao encerrar
+        # conexões HTTPS mantidas pelo SDK do Copilot Studio. Um loop Selector
+        # evita esse ruído e permite uma nova tentativa limpa quando o servidor
+        # corporativo encerra uma conexão ociosa.
+        def executar_consulta() -> str:
+            if os.name != "nt":
+                return asyncio.run(_consultar_maria_assincrono(prompt, token))
+
+            loop = asyncio.SelectorEventLoop()
+            try:
+                return loop.run_until_complete(
+                    _consultar_maria_assincrono(prompt, token)
+                )
+            finally:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
+
+        try:
+            texto = executar_consulta()
+        except (ConnectionResetError, TimeoutError, OSError) as erro_conexao:
+            if getattr(erro_conexao, "winerror", None) not in (None, 10054):
+                raise
+            texto = executar_consulta()
+
         return {"ok": True, "provedor": "MAR.IA", "modelo": "Microsoft Copilot Studio", "resposta": texto, "erro": None}
     except Exception as erro:
-        return {"ok": False, "provedor": "MAR.IA", "modelo": "Microsoft Copilot Studio", "resposta": "", "erro": str(erro)}
+        detalhe = str(erro) or erro.__class__.__name__
+        if isinstance(erro, ConnectionResetError) or getattr(erro, "winerror", None) == 10054:
+            detalhe = (
+                "A conexão com o Microsoft Copilot Studio foi encerrada pelo "
+                "servidor remoto. Aguarde alguns segundos e tente novamente."
+            )
+        return {"ok": False, "provedor": "MAR.IA", "modelo": "Microsoft Copilot Studio", "resposta": "", "erro": detalhe}

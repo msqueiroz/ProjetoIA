@@ -238,9 +238,21 @@ def buscar_pi_points_por_nome(
 
     resultados = []
     for ponto in pontos:
+        descricao = ""
+        unidade = ""
+        try:
+            ponto.LoadAttributes()
+            descricao = str(ponto.GetAttribute("descriptor") or "").strip()
+            unidade = str(ponto.GetAttribute("engunits") or "").strip()
+        except Exception:
+            # Alguns servidores restringem a leitura dos atributos clássicos.
+            # A descoberta pelo nome do PI Point continua disponível.
+            pass
         resultados.append({
             "pi_point": str(ponto.Name),
             "servidor_pi": str(servidor.Name),
+            "descricao": descricao,
+            "unidade": unidade,
         })
         if len(resultados) >= limite:
             break
@@ -1517,6 +1529,99 @@ def inventariar_familia(
         inventarios,
         ignore_index=True
     )
+
+
+def inventariar_familia_operacional(
+    servidor,
+    database,
+    caminho_pai,
+):
+    """Lê somente sinais operacionais usando uma única navegação no AF."""
+
+    termos_operacionais = (
+        "manut", "maintenance", "reparo", "falha", "fault", "trip",
+        "alarme", "defeito", "dispon", "pronto", "ready", "liberad",
+        "ligado", "running", "rodando", "opera", "estado", "status",
+        "corrente", "amper", "current", "rotacao", "rotação",
+        "velocidade", "speed",
+    )
+
+    sistema = conectar_af(servidor)
+    banco = sistema.Databases[database]
+    if banco is None:
+        raise ValueError(f"Database '{database}' não encontrada.")
+
+    elementos = banco.Elements
+    elemento_pai = None
+    for nome_elemento in caminho_pai:
+        elemento_pai = elementos[nome_elemento]
+        if elemento_pai is None:
+            raise ValueError(f"Elemento '{nome_elemento}' não encontrado.")
+        elementos = elemento_pai.Elements
+
+    registros = []
+
+    def visitar(elemento, caminho_atual):
+        encontrou_sinal = False
+
+        for atributo in elemento.Attributes:
+            nome = str(atributo.Name)
+            if not any(termo in nome.lower() for termo in termos_operacionais):
+                continue
+
+            encontrou_sinal = True
+            try:
+                unidade = str(atributo.DefaultUOM or "")
+            except Exception:
+                unidade = ""
+
+            try:
+                valor_af = atributo.GetValue()
+                valor = str(valor_af.Value)
+                timestamp = str(valor_af.Timestamp)
+                status = "OK"
+                detalhe_erro = ""
+            except Exception as erro:
+                valor = ""
+                timestamp = ""
+                status = "ERRO DE LEITURA"
+                detalhe_erro = str(erro).splitlines()[0] if str(erro) else "Erro não identificado."
+
+            registros.append({
+                "servidor": servidor,
+                "database": database,
+                "elemento": str(elemento.Name),
+                "atributo": nome,
+                "data_reference": "",
+                "uom": unidade,
+                "valor_atual": valor,
+                "timestamp": timestamp,
+                "status_leitura": status,
+                "detalhe_erro": detalhe_erro,
+                "caminho_elemento": " > ".join(caminho_atual),
+            })
+
+        # Preserva a árvore mesmo quando o elemento não possui sinal de estado.
+        if not encontrou_sinal:
+            registros.append({
+                "servidor": servidor,
+                "database": database,
+                "elemento": str(elemento.Name),
+                "atributo": "",
+                "data_reference": "",
+                "uom": "",
+                "valor_atual": "",
+                "timestamp": "",
+                "status_leitura": "SEM SINAL OPERACIONAL",
+                "detalhe_erro": "",
+                "caminho_elemento": " > ".join(caminho_atual),
+            })
+
+        for filho in elemento.Elements:
+            visitar(filho, caminho_atual + [str(filho.Name)])
+
+    visitar(elemento_pai, list(caminho_pai))
+    return pd.DataFrame(registros)
 
 def analisar_consistencia_familia(
     inventario
